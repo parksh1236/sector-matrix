@@ -341,6 +341,40 @@ def is_market_time(now: datetime) -> bool:
     return 900 <= hm <= 1535
 
 
+def run_daily(push: bool) -> None:
+    """
+    하루 한 번 실행되는 모드 (launchd 가 매일 오전 8시에 띄움).
+      - 주말/공휴일이면 아무것도 하지 않고 즉시 종료
+      - 장 시작 전에는 대기, 09:00~15:30 은 10분마다 수집
+      - 장 마감(15:35) 이 지나면 스스로 종료 -> 다음 날 아침에 새 프로세스로 다시 시작
+    """
+    now = datetime.now(KST)
+    if now.weekday() >= 5:
+        print(f"[{now:%m-%d %H:%M}] 주말 — 오늘은 수집하지 않고 종료")
+        return
+    if now.hour * 100 + now.minute > 1535:
+        print(f"[{now:%m-%d %H:%M}] 이미 장 마감 이후 — 종료")
+        return
+
+    print(f"[{now:%m-%d %H:%M}] 오늘 장 수집 시작 (마감까지 10분 간격)")
+    while True:
+        now = datetime.now(KST)
+        hm = now.hour * 100 + now.minute
+        if hm > 1535:
+            print(f"[{now:%m-%d %H:%M}] 장 마감 — 오늘 수집 종료")
+            return
+        if hm >= 900:
+            run_once(push=push)
+        else:
+            print(f"[{now:%m-%d %H:%M}] 장 시작 전 — 대기", flush=True)
+
+        # 다음 10분 경계까지 대기 (수집에 걸린 시간만큼 자동으로 짧아짐)
+        now = datetime.now(KST)
+        nxt = (now + timedelta(minutes=10)).replace(second=5, microsecond=0)
+        nxt = nxt.replace(minute=(nxt.minute // 10) * 10)
+        time.sleep(max(20, (nxt - now).total_seconds()))
+
+
 def run_loop(push: bool) -> None:
     """장중에는 10분 경계마다, 장외에는 대기하며 반복."""
     print("장중 10분 단위 자동 수집 시작 (Ctrl+C 로 종료)")
@@ -361,7 +395,9 @@ def run_loop(push: bool) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="주도섹터/주도주 10분 매트릭스")
-    parser.add_argument("--loop", action="store_true", help="장중 10분마다 자동 반복")
+    parser.add_argument("--loop", action="store_true", help="장중 10분마다 자동 반복 (계속 상주)")
+    parser.add_argument("--daily", action="store_true",
+                        help="오늘 장만 수집하고 마감 후 종료 (launchd 자동실행용)")
     parser.add_argument("--push", action="store_true", help="수집 후 깃허브 커밋/푸시")
     parser.add_argument("--rebuild", action="store_true",
                         help="시세 수집 없이 저장된 데이터로 페이지만 다시 생성")
@@ -374,7 +410,9 @@ if __name__ == "__main__":
         print(f"✔ {build_page(day)} 재생성 (슬롯 {len(day['slots'])}개)")
         sys.exit(0)
 
-    if args.loop:
+    if args.daily:
+        run_daily(push=args.push)
+    elif args.loop:
         run_loop(push=args.push)
     else:
         run_once(push=args.push)
