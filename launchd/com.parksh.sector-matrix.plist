@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.parksh.sector-matrix</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/psh/Documents/code/sector-matrix/.venv/bin/python</string>
+    <string>/Users/psh/Documents/code/sector-matrix/sector_matrix.py</string>
+    <string>--daily</string>
+    <string>--push</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/psh/Documents/code/sector-matrix</string>
+
+  <!-- 매일 오전 8시 정각에 시작. 장 마감 후 스스로 종료하므로 하루 한 프로세스. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <!-- 비정상 종료(크래시) 시에만 다시 띄움. 정상 종료(장 마감)면 다음 날 8시까지 대기. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+
+  <!-- 설정 오류 등으로 즉시 죽는 경우 재시작이 폭주하지 않도록 최소 5분 간격 -->
+  <key>ThrottleInterval</key>
+  <integer>300</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>ko_KR.UTF-8</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/psh/Library/Logs/sector-matrix.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/psh/Library/Logs/sector-matrix.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

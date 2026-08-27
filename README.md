@@ -43,8 +43,32 @@ cp .env.example .env    # 그리고 KIS 앱키/시크릿을 채워 넣기
 python sector_matrix.py               # 지금 한 번 수집하고 페이지 생성
 python sector_matrix.py --loop        # 장중 10분마다 자동 수집
 python sector_matrix.py --loop --push # 자동 수집 + 깃허브 자동 커밋/푸시
+python sector_matrix.py --daily --push # 오늘 장만 수집하고 마감 후 종료 (자동실행용)
 python sector_matrix.py --rebuild     # 수집 없이 저장된 데이터로 페이지만 재생성
 ./run_sector_matrix.sh                # --loop --push 를 백그라운드로 실행
+```
+
+### 매일 자동 실행 (macOS launchd)
+
+`launchd/com.parksh.sector-matrix.plist` 를 `~/Library/LaunchAgents/` 에 두면
+**매일 오전 8시에 자동으로 시작**해서 장 마감 후 스스로 종료합니다. 주말이면 즉시 종료합니다.
+
+```bash
+cp launchd/com.parksh.sector-matrix.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.parksh.sector-matrix.plist
+launchctl print gui/$(id -u)/com.parksh.sector-matrix | grep -E "state|last exit code"
+```
+
+로그는 `~/Library/Logs/sector-matrix.log` 에 쌓입니다.
+
+> ⚠️ 로그 경로를 `~/Documents` 안으로 두면 macOS 개인정보 보호(TCC)가 백그라운드 에이전트의
+> 쓰기를 막아 **exit 78(EX_CONFIG)** 로 조용히 죽습니다. 로그는 반드시 `~/Library/Logs` 처럼
+> 보호되지 않는 경로에 두세요.
+
+중지하려면:
+
+```bash
+launchctl bootout gui/$(id -u)/com.parksh.sector-matrix
 ```
 
 ## 구조
@@ -55,6 +79,7 @@ python sector_matrix.py --rebuild     # 수집 없이 저장된 데이터로 페
 | `sector_matrix.py` | 시세 수집 → `docs/data/YYYYMMDD.json` 누적 → 페이지 생성 → 깃 푸시 |
 | `sector_matrix_template.html` | 대시보드 UI 템플릿 (데이터가 주입되어 `docs/index.html` 이 됨) |
 | `auth.py` / `config.py` | KIS Open API 토큰 발급 및 캐싱 |
+| `launchd/` | macOS 자동 실행용 LaunchAgent 설정 |
 | `docs/` | GitHub Pages 로 서비스되는 결과물 |
 
 ## 데이터
