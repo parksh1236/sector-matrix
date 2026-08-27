@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>주도섹터 · 주도주 10분 매트릭스</title>
+<style>
+:root{
+  --bg:#0a0c10; --panel:#11141b; --panel-2:#161a23; --line:#232936;
+  --ink:#e6e9ef; --ink-dim:#9aa3b2; --ink-faint:#616b7d;
+  --up:#ff4d5e; --down:#4d8dff; --flat:#6d7688;
+  --accent:#ffb020;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--sans);
+  font-size:14px; line-height:1.45;
+  background-image:radial-gradient(ellipse 120% 60% at 50% -10%,#18202e 0%,transparent 70%);
+  background-repeat:no-repeat;
+}
+.wrap{max-width:1680px;margin:0 auto;padding:20px 20px 64px}
+
+/* ---------- 헤더 ---------- */
+header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px;
+  padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:18px}
+h1{margin:0;font-size:19px;font-weight:750;letter-spacing:-.02em}
+h1 .dot{color:var(--accent)}
+.sub{color:var(--ink-faint);font-size:12px;font-family:var(--mono);margin-top:2px}
+.spacer{flex:1}
+.hctl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-dim)}
+select,button.tog{
+  background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+  border-radius:7px;padding:5px 9px;font-size:12px;font-family:var(--mono);cursor:pointer}
+button.tog[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.badge{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:999px;
+  border:1px solid var(--line);background:var(--panel-2);color:var(--ink-dim)}
+.badge.live{border-color:rgba(255,77,94,.5);color:var(--up)}
+.badge.live::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--up);margin-right:6px;vertical-align:1px;animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ---------- 주도섹터 카드 ---------- */
+.leaders{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+  position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent);opacity:.9}
+.card .rank{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.08em}
+.card .sname{font-size:17px;font-weight:700;margin:2px 0 6px;letter-spacing:-.01em}
+.card .schg{font-family:var(--mono);font-size:24px;font-weight:700;letter-spacing:-.02em}
+.card .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-top:2px}
+.card .lead{margin-top:10px;padding-top:9px;border-top:1px dashed var(--line);
+  display:flex;align-items:baseline;gap:8px;font-size:13px}
+.card .lead .tag{font-size:10px;color:var(--ink-faint);font-family:var(--mono)}
+.card .lead .nm{font-weight:650}
+.card .lead .pc{font-family:var(--mono);margin-left:auto;font-weight:650}
+
+/* ---------- 매트릭스 ---------- */
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
+.toolbar .lbl{font-size:12px;color:var(--ink-faint)}
+.legend{display:flex;align-items:center;gap:4px;margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink-faint)}
+.legend i{width:16px;height:11px;border-radius:2px;display:block}
+
+.matrix-shell{border:1px solid var(--line);border-radius:12px;overflow:auto;background:var(--panel);
+  max-height:min(72vh,860px)}
+table{border-collapse:separate;border-spacing:0;width:100%;font-family:var(--mono);font-size:11px}
+thead th.spacer-c{width:99%}
+thead th{position:sticky;top:0;z-index:3;background:var(--panel-2);color:var(--ink-faint);
+  font-weight:500;padding:8px 4px;border-bottom:1px solid var(--line);white-space:nowrap}
+thead th.sticky-l{left:0;z-index:5;text-align:left;padding-left:14px}
+th.sticky-l,td.sticky-l{position:sticky;left:0;background:var(--panel);z-index:2;
+  border-right:1px solid var(--line);min-width:236px;max-width:236px}
+tbody tr:hover td{background-color:rgba(255,255,255,.028)}
+tbody tr:hover td.sticky-l{background:var(--panel-2)}
+td{padding:0;text-align:center;border-bottom:1px solid rgba(35,41,54,.55)}
+
+.srow td.sticky-l{cursor:pointer;padding:7px 10px 7px 14px}
+.srow.open td.sticky-l{box-shadow:inset 3px 0 0 var(--accent)}
+.slabel{display:flex;align-items:center;gap:8px}
+.caret{color:var(--ink-faint);font-size:9px;width:9px;transition:transform .15s}
+.srow.open .caret{transform:rotate(90deg);color:var(--accent)}
+.sname-c{font-family:var(--sans);font-size:13px;font-weight:650;letter-spacing:-.01em}
+.snum{margin-left:auto;font-weight:700;font-size:12px}
+.leadline{display:flex;align-items:center;gap:6px;margin:3px 0 0 17px;font-size:10.5px;color:var(--ink-faint)}
+.leadline .k{font-family:var(--sans);color:var(--ink-dim);font-weight:600}
+.leadline .v{margin-left:auto;font-weight:650}
+
+.cell{display:block;min-width:36px;height:26px;line-height:26px;font-size:10px;font-variant-numeric:tabular-nums;
+  cursor:pointer;color:rgba(255,255,255,.85)}
+.cell.empty{color:var(--ink-faint);opacity:.25}
+.cell.sel{outline:1.5px solid var(--accent);outline-offset:-2px}
+
+.trow td{border-bottom:1px solid rgba(35,41,54,.35)}
+.trow td.sticky-l{padding:3px 10px 3px 32px;background:#0d1016}
+.trow:hover td.sticky-l{background:#12161f}
+.tname{display:flex;align-items:center;gap:7px;font-family:var(--sans);font-size:12px;color:var(--ink-dim)}
+.tname .code{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint)}
+.tname .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tname .chg{margin-left:auto;font-family:var(--mono);font-weight:650;font-size:11px}
+.crown{color:var(--accent)}
+.trow .cell{height:19px;line-height:19px;font-size:0}
+
+/* ---------- 상세 패널 ---------- */
+.detail{margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.detail h2{margin:0 0 2px;font-size:15px;font-weight:700}
+.detail .dsub{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:12px}
+.dtable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+.dtable th{text-align:right;color:var(--ink-faint);font-weight:500;font-size:10.5px;
+  padding:5px 8px;border-bottom:1px solid var(--line)}
+.dtable th:nth-child(1),.dtable th:nth-child(2){text-align:left}
+.dtable td{padding:5px 8px;text-align:right;border-bottom:1px solid rgba(35,41,54,.5)}
+.dtable td:nth-child(1){color:var(--ink-faint);text-align:left;width:28px}
+.dtable td:nth-child(2){text-align:left;font-family:var(--sans);font-weight:600}
+.bar{height:4px;border-radius:2px;background:var(--flat);opacity:.55}
+.empty-note{color:var(--ink-faint);font-size:12.5px;padding:8px 0}
+footer{margin-top:22px;color:var(--ink-faint);font-size:11px;font-family:var(--mono);
+  display:flex;flex-wrap:wrap;gap:10px}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--flat)}
+@media (max-width:820px){
+  th.sticky-l,td.sticky-l{min-width:196px;max-width:196px}
+  .tname .code{display:none}
+  .card .schg{font-size:20px}
+}
+
+/* ---------- 탭 ---------- */
+.tabs{display:flex;gap:4px;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:9px;padding:3px}
+.tabs button{background:transparent;border:0;color:var(--ink-dim);font-family:var(--sans);
+  font-size:12.5px;font-weight:650;padding:6px 14px;border-radius:6px;cursor:pointer;
+  letter-spacing:-.01em;transition:background .12s,color .12s}
+.tabs button[aria-selected="true"]{background:#232b3a;color:#fff;
+  box-shadow:0 0 0 1px rgba(255,176,32,.35) inset}
+[hidden]{display:none !important}
+
+/* ---------- 매수금액 순위 ---------- */
+.rank-top{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:12px 14px}
+.stat .k{font-size:11px;color:var(--ink-faint);font-family:var(--mono)}
+.stat .v{font-family:var(--mono);font-size:21px;font-weight:700;letter-spacing:-.02em;margin-top:2px}
+.stat .s{font-size:11px;color:var(--ink-faint);font-family:var(--mono)}
+
+.conc{background:var(--panel);border:1px solid var(--line);border-radius:11px;
+  padding:13px 15px;margin-bottom:16px}
+.conc h3{margin:0 0 10px;font-size:12.5px;font-weight:650;color:var(--ink-dim)}
+.crow{display:flex;align-items:center;gap:9px;margin-bottom:6px;font-size:12px}
+.crow .nm{width:112px;flex:none;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crow .tr{flex:1;height:9px;background:#1b2130;border-radius:5px;overflow:hidden}
+.crow .tr i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,#ff4d5e,#ff8a4d)}
+.crow .pv{width:96px;flex:none;text-align:right;font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+
+.rank-shell{border:1px solid var(--line);border-radius:12px;overflow:auto;background:var(--panel)}
+.rtable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+.rtable thead th{position:sticky;top:0;background:var(--panel-2);color:var(--ink-faint);
+  font-weight:500;font-size:10.5px;text-align:right;padding:9px 10px;
+  border-bottom:1px solid var(--line);white-space:nowrap}
+.rtable thead th:nth-child(-n+4){text-align:left}
+.rtable td{padding:7px 10px;text-align:right;border-bottom:1px solid rgba(35,41,54,.5);white-space:nowrap}
+.rtable tbody tr:hover{background:rgba(255,255,255,.03)}
+.rtable td.rk{text-align:left;width:34px;color:var(--ink-faint);font-weight:700}
+.rtable td.mv{text-align:left;width:52px;font-size:10.5px}
+.rtable td.nm{text-align:left;font-family:var(--sans);font-weight:650;font-size:13px}
+.rtable td.sec{text-align:left;width:104px}
+.rtable tr.top3 td.rk{color:var(--accent)}
+.rtable tr.is-etf{opacity:.62}
+.sectag{display:inline-block;font-family:var(--sans);font-size:10.5px;font-weight:600;
+  padding:2px 7px;border-radius:5px;background:rgba(255,176,32,.13);color:var(--accent);
+  border:1px solid rgba(255,176,32,.25)}
+.sectag.etf{background:rgba(154,163,178,.12);color:var(--ink-faint);border-color:var(--line)}
+.mv .up-a{color:var(--up)} .mv .dn-a{color:var(--down)}
+.mv .new{color:var(--accent);font-weight:700}
+.mv .same{color:var(--ink-faint)}
+.amtbar{display:inline-block;vertical-align:middle;height:7px;border-radius:4px;
+  background:linear-gradient(90deg,rgba(255,77,94,.85),rgba(255,138,77,.85));min-width:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>주도섹터 <span class="dot">·</span> 주도주 매트릭스</h1>
+    <div class="sub" id="stamp">—</div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button role="tab" data-view="matrix" aria-selected="true">섹터 매트릭스</button>
+    <button role="tab" data-view="rank" aria-selected="false">매수금액 TOP 30</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="hctl">
+    <span id="live" class="badge">—</span>
+    <select id="dateSel" title="날짜 선택"></select>
+    <button class="tog" id="autoBtn" aria-pressed="false" title="60초마다 자동 새로고침">자동갱신</button>
+  </div>
+</header>
+
+<div id="view-matrix">
+<section class="leaders" id="leaders"></section>
+
+<div class="toolbar">
+  <span class="lbl">정렬</span>
+  <button class="tog" data-sort="chg" aria-pressed="true">현재 강도</button>
+  <button class="tog" data-sort="mom" aria-pressed="false">최근 10분 모멘텀</button>
+  <button class="tog" data-sort="amt" aria-pressed="false">거래대금</button>
+  <span class="lbl" style="margin-left:8px">|</span>
+  <button class="tog" id="expandAll" aria-pressed="false">전 섹터 종목 펼치기</button>
+  <div class="legend">
+    <span>-3%</span>
+    <i style="background:rgba(77,141,255,.85)"></i><i style="background:rgba(77,141,255,.5)"></i>
+    <i style="background:rgba(77,141,255,.2)"></i><i style="background:#161a23"></i>
+    <i style="background:rgba(255,77,94,.2)"></i><i style="background:rgba(255,77,94,.5)"></i>
+    <i style="background:rgba(255,77,94,.85)"></i>
+    <span>+3%</span>
+  </div>
+</div>
+
+<div class="matrix-shell">
+  <table id="matrix"><thead></thead><tbody></tbody></table>
+</div>
+
+<section class="detail" id="detail"></section>
+</div><!-- /view-matrix -->
+
+<div id="view-rank" hidden>
+  <div class="toolbar">
+    <span class="lbl">기준 시각</span>
+    <select id="rankSlot"></select>
+    <span class="lbl" style="margin-left:auto">거래대금(매수금액) 상위 30 · 코스피+코스닥 개별종목 (ETF 제외)</span>
+  </div>
+  <div class="rank-top" id="rankStats"></div>
+  <div class="conc" id="rankConc"></div>
+  <div class="rank-shell">
+    <table class="rtable" id="rankTable"><thead></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<footer>
+  <span>데이터: 한국투자증권 Open API · 10분 단위 스냅샷</span>
+  <span>섹터 등락률 = 구성종목 등락률 단순평균</span>
+  <span>주도주 = 해당 시점 섹터 내 등락률 1위</span>
+</footer>
+</div>
+
+<script>
+const PAYLOAD = {"universe":{"반도체":[["005930","삼성전자"],["000660","SK하이닉스"],["042700","한미반도체"],["058470","리노공업"],["039030","이오테크닉스"],["240810","원익IPS"],["036930","주성엔지니어링"],["000990","DB하이텍"],["403870","HPSP"],["140860","파크시스템스"]],"2차전지":[["373220","LG에너지솔루션"],["006400","삼성SDI"],["247540","에코프로비엠"],["086520","에코프로"],["066970","엘앤에프"],["003670","포스코퓨처엠"],["361610","SK아이이테크놀로지"],["365340","성일하이텍"],["278280","천보"]],"바이오/제약":[["207940","삼성바이오로직스"],["068270","셀트리온"],["000100","유한양행"],["128940","한미약품"],["196170","알테오젠"],["141080","리가켐바이오"],["028300","HLB"],["298380","에이비엘바이오"],["087010","펩트론"]],"방산/우주":[["012450","한화에어로스페이스"],["079550","LIG디펜스앤에어로스페이스"],["047810","한국항공우주"],["064350","현대로템"],["272210","한화시스템"],["103140","풍산"],["003570","SNT다이내믹스"]],"조선":[["009540","HD한국조선해양"],["042660","한화오션"],["010140","삼성중공업"],["329180","HD현대중공업"],["443060","HD현대마린솔루션"],["017960","한국카본"],["075580","세진중공업"]],"원전/전력기기":[["034020","두산에너빌리티"],["052690","한전기술"],["051600","한전KPS"],["010120","LS ELECTRIC"],["267260","HD현대일렉트릭"],["298040","효성중공업"],["001440","대한전선"],["033100","제룡전기"],["083650","비에이치아이"]],"자동차":[["005380","현대차"],["000270","기아"],["012330","현대모비스"],["204320","HL만도"],["018880","한온시스템"],["005850","에스엘"],["011210","현대위아"]],"인터넷/게임":[["035420","NAVER"],["035720","카카오"],["259960","크래프톤"],["036570","NC"],["251270","넷마블"],["112040","위메이드"],["263750","펄어비스"],["293490","카카오게임즈"]],"AI/소프트웨어":[["402030","코난테크놀로지"],["030520","한컴"],["041020","폴라리스오피스"],["304100","솔트룩스"],["047560","이스트소프트"],["347860","알체라"],["108860","셀바스AI"]],"로봇":[["454910","두산로보틱스"],["277810","레인보우로보틱스"],["388720","유일로보틱스"],["117730","티로보틱스"],["108490","로보티즈"],["348340","뉴로메카"]],"엔터/미디어":[["352820","하이브"],["035900","JYP Ent."],["041510","에스엠"],["122870","와이지엔터테인먼트"],["035760","CJ ENM"],["253450","스튜디오드래곤"],["376300","디어유"]],"화장품":[["090430","아모레퍼시픽"],["051900","LG생활건강"],["192820","코스맥스"],["161890","한국콜마"],["257720","실리콘투"],["237880","클리오"],["018290","브이티"]],"금융":[["105560","KB금융"],["055550","신한지주"],["086790","하나금융지주"],["316140","우리금융지주"],["138040","메리츠금융지주"],["000810","삼성화재"],["032830","삼성생명"],["006800","미래에셋증권"]],"철강/비철":[["005490","POSCO홀딩스"],["004020","현대제철"],["010130","고려아연"],["460860","동국제강"],["001430","세아베스틸지주"],["000670","영풍"]],"화학":[["051910","LG화학"],["011170","롯데케미칼"],["011780","금호석유화학"],["009830","한화솔루션"],["298020","효성티앤씨"],["006650","대한유화"]],"건설":[["000720","현대건설"],["006360","GS건설"],["375500","DL이앤씨"],["047040","대우건설"],["294870","IPARK현대산업개발"],["028050","삼성E&A"]],"유통/음식료":[["097950","CJ제일제당"],["271560","오리온"],["004370","농심"],["003230","삼양식품"],["139480","이마트"],["282330","BGF리테일"],["023530","롯데쇼핑"]],"통신":[["017670","SK텔레콤"],["030200","KT"],["032640","LG유플러스"]],"항공/여행":[["003490","대한항공"],["020560","아시아나항공"],["272450","진에어"],["039130","하나투어"],["080160","모두투어"]],"의료기기/미용":[["214150","클래시스"],["214450","파마리서치"],["328130","루닛"],["338220","뷰노"],["145020","휴젤"]]},"date":"20260827","updated_at":"2026-08-27 23:22:15","slot_labels":["0900","0910","0920","0930","0940","0950","1000","1010","1020","1030","1040","1050","1100","1110","1120","1130","1140","1150","1200","1210","1220","1230","1240","1250","1300","1310","1320","1330","1340","1350","1400","1410","1420","1430","1440","1450","1500","1510","1520","1530"],"slots":[{"t":"1530","d":{"005930":[1.72,266000,44881.6],"000660":[2.49,1730000,56821.1],"042700":[1.14,222000,845.8],"058470":[0.45,66700,236.9],"039030":[1.5,406500,261.9],"240810":[3.11,112700,611.6],"036930":[3.29,179100,1502.9],"000990":[4.26,95400,223.8],"403870":[4.12,50500,1486.4],"140860":[0.74,271500,32.0],"373220":[5.56,370500,1586.7],"006400":[10.27,569000,5257.3],"247540":[5.83,118000,616.9],"086520":[5.75,92000,1081.6],"066970":[6.22,129800,945.0],"003670":[9.07,184000,1193.3],"361610":[-8.72,18220,405.8],"365340":[3.52,36750,18.4],"278280":[12.4,40800,45.4],"207940":[-0.31,1594000,473.9],"068270":[-1.09,191300,490.9],"000100":[-4.61,82700,314.4],"128940":[-4.91,504000,1071.9],"196170":[0.0,311500,1146.5],"141080":[1.32,99600,189.2],"028300":[-2.88,35450,285.5],"298380":[1.88,76000,182.6],"087010":[1.73,188200,147.4],"012450":[5.8,1150000,1581.0],"079550":[4.93,745000,950.0],"047810":[4.16,137600,317.3],"064350":[1.61,138600,369.2],"272210":[6.13,77900,325.5],"103140":[0.73,83000,83.0],"003570":[0.65,31150,9.1],"009540":[0.0,360500,355.5],"042660":[2.63,89600,513.4],"010140":[1.45,21000,351.9],"329180":[1.18,470000,843.7],"443060":[0.23,221000,127.1],"017960":[-0.21,23800,29.0],"075580":[0.28,10710,8.5],"034020":[0.12,85900,3223.6],"052690":[2.35,126300,858.7],"051600":[-1.47,46900,54.3],"010120":[8.93,219500,2429.9],"267260":[12.01,821000,1817.0],"298040":[10.08,3079000,2069.8],"001440":[5.67,29800,828.6],"033100":[4.7,50100,139.2],"083650":[-1.23,64000,188.0],"005380":[-2.45,398000,4599.9],"000270":[-4.03,126100,1827.2],"012330":[-2.69,451500,3082.8],"204320":[0.0,50400,182.9],"018880":[-1.83,3480,88.0],"005850":[-0.75,52600,39.9],"011210":[-1.82,59300,34.4],"035420":[-1.59,216500,1671.6],"035720":[-0.96,36000,457.7],"259960":[-3.73,219500,217.7],"036570":[-1.55,223000,147.3],"251270":[-3.46,36300,52.8],"112040":[0.0,15150,22.9],"263750":[-2.77,31550,115.2],"293490":[-2.5,8190,30.7],"402030":[0.84,14400,4.5],"030520":[-0.06,17670,21.0],"041020":[-0.51,2935,3.9],"304100":[2.92,16230,29.2],"047560":[0.52,7660,2.5],"347860":[0.0,1344,0.8],"108860":[6.48,9530,41.4],"454910":[1.81,73100,260.0],"277810":[4.55,471000,468.7],"388720":[2.09,68400,11.3],"117730":[1.22,13290,5.0],"108490":[1.8,255000,315.5],"348340":[1.26,19290,54.8],"352820":[-0.34,178500,518.3],"035900":[-0.75,39750,112.7],"041510":[-3.12,74600,102.6],"122870":[-1.85,39850,40.2],"035760":[-2.39,32650,18.1],"253450":[-0.91,21700,11.6],"376300":[0.86,18790,7.5],"090430":[-0.77,142400,296.0],"051900":[-4.02,298500,275.3],"192820":[-1.74,283000,360.2],"161890":[-2.02,145800,336.6],"257720":[-5.12,49150,3881.8],"237880":[-0.62,12770,10.8],"018290":[-2.0,12230,21.1],"105560":[0.9,168100,1272.6],"055550":[1.3,108800,1034.0],"086790":[0.3,133600,800.7],"316140":[-0.15,32950,415.9],"138040":[0.85,119000,157.4],"000810":[0.29,682000,506.6],"032830":[-0.81,307000,901.7],"006800":[-0.55,36100,374.7],"005490":[3.51,339500,1460.4],"004020":[5.89,31450,490.1],"010130":[0.0,1372000,238.7],"460860":[12.22,10840,79.9],"001430":[1.28,43450,48.3],"000670":[1.0,40250,14.3],"051910":[4.17,274500,480.7],"011170":[0.7,57400,61.8],"011780":[-0.32,123600,100.0],"009830":[1.52,33400,494.8],"298020":[1.68,333000,72.4],"006650":[1.7,89500,45.6],"000720":[-0.84,129300,1282.5],"006360":[-2.38,36900,1038.1],"375500":[1.36,74300,394.8],"047040":[4.71,20000,4522.2],"294870":[0.0,23000,28.5],"028050":[3.83,50100,1236.9],"097950":[-1.53,186300,138.3],"271560":[-2.17,126200,94.5],"004370":[-6.97,427000,204.8],"003230":[-1.79,1480000,671.6],"139480":[-1.46,74000,66.2],"282330":[-5.74,139700,155.9],"023530":[-0.95,104100,103.1],"017670":[-0.5,99100,916.4],"030200":[1.13,53900,212.2],"032640":[-1.07,14740,105.8],"003490":[0.18,28200,897.5],"020560":[-0.26,7530,17.4],"272450":[0.17,5900,7.7],"039130":[-4.59,32200,20.0],"080160":[-2.16,9040,2.8],"214150":[1.41,32300,206.3],"214450":[-2.15,432500,378.5],"328130":[-1.31,9050,29.8],"338220":[0.41,7380,1.1],"145020":[-2.0,245500,51.7]},"r":[["000660","SK하이닉스",1730000,2.49,56821.1,3264042,111.6,"코스피"],["005930","삼성전자",266000,1.72,44881.6,16829395,86.2,"코스피"],["009150","삼성전기",1385000,4.14,9587.7,696537,142.4,"코스피"],["005935","삼성전자우",194300,-1.27,7848.4,4002200,82.2,"코스피"],["006400","삼성SDI",569000,10.27,5257.3,940535,457.9,"코스피"],["402340","SK스퀘어",1068000,0.95,5177.8,482253,94.2,"코스피"],["005380","현대차",398000,-2.45,4599.9,1150372,121.2,"코스피"],["047040","대우건설",20000,4.71,4522.2,22130199,108.6,"코스피"],["010170","대한광통신",14860,10.07,4086.3,27801868,202.5,"코스닥"],["257720","실리콘투",49150,-5.12,3881.8,8059350,853.3,"코스닥"],["034020","두산에너빌리티",85900,0.12,3223.6,3748823,58.4,"코스피"],["012330","현대모비스",451500,-2.69,3082.8,680279,117.2,"코스피"],["010120","LS ELECTRIC",219500,8.93,2429.9,1135340,196.5,"코스피"],["222800","심텍",126900,12.6,2136.6,1716697,221.2,"코스닥"],["298040","효성중공업",3079000,10.08,2069.8,68873,283.8,"코스피"],["0155E0","해치텍",16850,20.19,1868.8,11145899,249.4,"코스닥"],["000270","기아",126100,-4.03,1827.2,1435376,196.6,"코스피"],["267260","HD현대일렉트릭",821000,12.01,1817.0,226942,210.6,"코스피"],["062040","산일전기",201500,13.91,1745.3,894671,576.1,"코스피"],["035420","NAVER",216500,-1.59,1671.6,765068,120.6,"코스피"],["373220","LG에너지솔루션",370500,5.56,1586.7,432292,236.6,"코스피"],["012450","한화에어로스페이스",1150000,5.8,1581.0,139565,167.7,"코스피"],["000500","가온전선",211500,25.0,1564.0,792916,592.4,"코스피"],["036930","주성엔지니어링",179100,3.29,1502.9,849832,127.3,"코스닥"],["028260","삼성물산",375500,-3.1,1494.1,394068,103.2,"코스피"],["403870","HPSP",50500,4.12,1486.4,2984684,150.1,"코스닥"],["005490","POSCO홀딩스",339500,3.51,1460.4,430577,292.2,"코스피"],["096770","SK이노베이션",112000,0.72,1405.5,1256142,29.7,"코스피"],["232140","와이씨",12490,2.21,1324.2,9891928,568.0,"코스닥"],["000720","현대건설",129300,-0.84,1282.5,978040,44.4,"코스피"]]}],"available_dates":["20260827"]};
+
+/* ---------------- 유틸 ---------------- */
+const $ = s => document.querySelector(s);
+const hhmm = t => t.slice(0,2) + ":" + t.slice(2);
+const sign = v => (v > 0 ? "+" : "") + v.toFixed(2);
+const cls  = v => v > 0 ? "up" : v < 0 ? "down" : "flat";
+
+// 거래대금(억) -> 사람이 읽는 표기
+function amtText(eok){
+  if (eok >= 10000) return (eok/10000).toFixed(2) + "조";
+  if (eok >= 1000)  return Math.round(eok).toLocaleString() + "억";
+  return eok.toFixed(0) + "억";
+}
+
+// 등락률 -> 히트맵 배경색 (한국식: 상승 빨강 / 하락 파랑, ±3% 에서 최대 농도)
+function heat(v){
+  if (v === null || v === undefined) return "transparent";
+  const a = Math.min(Math.abs(v) / 3, 1);
+  const alpha = 0.07 + a * 0.78;
+  return v >= 0 ? `rgba(255,77,94,${alpha.toFixed(3)})`
+                : `rgba(77,141,255,${alpha.toFixed(3)})`;
+}
+
+/* ---------------- 상태 ---------------- */
+let DATA = PAYLOAD;              // 현재 화면에 그려진 하루치 데이터
+let sortKey = "chg";             // 섹터 정렬 기준
+let openSectors = new Set();     // 펼쳐진 섹터
+let selected = null;             // 선택된 셀 {sector, slotIdx}
+let autoTimer = null;
+
+/* ---------------- 집계 ---------------- */
+// 실제로 데이터가 들어온 슬롯만 사용 (아직 안 지난 시간대는 그리지 않음)
+function usedSlots(){ return DATA.slots.map(s => s.t); }
+
+// 특정 슬롯·섹터의 집계값
+function agg(slot, sector){
+  const members = DATA.universe[sector];
+  let sum = 0, n = 0, amt = 0, up = 0, down = 0, best = null;
+  for (const [code, name] of members){
+    const r = slot.d[code];
+    if (!r) continue;
+    const [chg, price, a] = r;
+    sum += chg; n++; amt += a;
+    if (chg > 0) up++; else if (chg < 0) down++;
+    if (!best || chg > best.chg) best = {code, name, chg, price, amt:a};
+  }
+  if (!n) return null;
+  return {chg: sum/n, amt, up, down, n, leader: best};
+}
+
+// 섹터별 [슬롯index -> 집계] 행 전체
+function buildRows(){
+  const slots = DATA.slots;
+  const rows = Object.keys(DATA.universe).map(sector => {
+    const series = slots.map(s => agg(s, sector));
+    const last = series.length ? series[series.length-1] : null;
+    const prev = series.length > 1 ? series[series.length-2] : null;
+    return {
+      sector, series, last,
+      chg: last ? last.chg : 0,
+      amt: last ? last.amt : 0,
+      mom: (last && prev) ? last.chg - prev.chg : 0,
+    };
+  });
+  rows.sort((a,b) => b[sortKey] - a[sortKey]);
+  return rows;
+}
+
+/* ---------------- 렌더 ---------------- */
+function renderStamp(){
+  const d = DATA.date;
+  const pretty = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`;
+  const n = DATA.slots.length;
+  const lastT = n ? hhmm(DATA.slots[n-1].t) : "—";
+  $("#stamp").textContent =
+    `${pretty} · 마지막 스냅샷 ${lastT} · 슬롯 ${n}개 · 종목 ${Object.values(DATA.universe).flat().length}개`;
+
+  const live = $("#live");
+  const now = new Date();
+  const kst = new Date(now.toLocaleString("en-US", {timeZone:"Asia/Seoul"}));
+  const hm = kst.getHours()*100 + kst.getMinutes();
+  const isToday = DATA.date === `${kst.getFullYear()}${String(kst.getMonth()+1).padStart(2,"0")}${String(kst.getDate()).padStart(2,"0")}`;
+  const open = isToday && kst.getDay() >= 1 && kst.getDay() <= 5 && hm >= 900 && hm <= 1535;
+  live.textContent = open ? "장중" : "장 마감";
+  live.className = "badge" + (open ? " live" : "");
+}
+
+function renderLeaders(rows){
+  const top = rows.slice().sort((a,b) => b.chg - a.chg).slice(0,4);
+  $("#leaders").innerHTML = top.map((r,i) => {
+    if (!r.last) return "";
+    const L = r.last.leader;
+    return `<div class="card">
+      <div class="rank">주도섹터 #${i+1}</div>
+      <div class="sname">${r.sector}</div>
+      <div class="schg ${cls(r.chg)}">${sign(r.chg)}<span style="font-size:14px">%</span></div>
+      <div class="meta">상승 ${r.last.up} / 하락 ${r.last.down} · 총 ${r.last.n}종목</div>
+      <div class="meta">거래대금 ${amtText(r.last.amt)} · 최근 10분 ${sign(r.mom)}p</div>
+      <div class="lead">
+        <span class="tag">주도주</span>
+        <span class="nm">${L.name}</span>
+        <span class="pc ${cls(L.chg)}">${sign(L.chg)}%</span>
+      </div>
+    </div>`;
+  }).join("") || `<div class="empty-note">아직 수집된 스냅샷이 없습니다.</div>`;
+}
+
+function renderMatrix(rows){
+  const slots = DATA.slots;
+  const thead = `<tr>
+    <th class="sticky-l">섹터 / 주도주</th>
+    ${slots.map(s => `<th>${hhmm(s.t)}</th>`).join("")}
+    <th class="spacer-c"></th>
+  </tr>`;
+  $("#matrix thead").innerHTML = thead;
+
+  const body = rows.map(r => {
+    const L = r.last ? r.last.leader : null;
+    const head = `<td class="sticky-l">
+      <div class="slabel">
+        <span class="caret">▶</span>
+        <span class="sname-c">${r.sector}</span>
+        <span class="snum ${cls(r.chg)}">${r.last ? sign(r.chg)+"%" : "—"}</span>
+      </div>
+      ${L ? `<div class="leadline">
+        <span class="crown">★</span><span class="k">${L.name}</span>
+        <span class="v ${cls(L.chg)}">${sign(L.chg)}%</span></div>` : ""}
+    </td>`;
+
+    const cells = r.series.map((a,i) => {
+      if (!a) return `<td><span class="cell empty">·</span></td>`;
+      const sel = (selected && selected.sector === r.sector && selected.i === i) ? " sel" : "";
+      return `<td><span class="cell${sel}" style="background:${heat(a.chg)}"
+        data-sector="${r.sector}" data-i="${i}"
+        title="${r.sector} ${hhmm(slots[i].t)} · 평균 ${sign(a.chg)}% · 주도주 ${a.leader.name} ${sign(a.leader.chg)}%"
+        >${a.chg.toFixed(1)}</span></td>`;
+    }).join("");
+
+    const pad = "<td></td>";
+    let out = `<tr class="srow${openSectors.has(r.sector) ? " open" : ""}" data-sector="${r.sector}">${head}${cells}${pad}</tr>`;
+
+    if (openSectors.has(r.sector)){
+      // 섹터 내 종목을 현재 등락률 순으로 정렬해 종목 × 시간 미니 매트릭스를 붙인다
+      const lastSlot = slots[slots.length-1];
+      const members = DATA.universe[r.sector].slice().sort((a,b) => {
+        const av = lastSlot && lastSlot.d[a[0]] ? lastSlot.d[a[0]][0] : -999;
+        const bv = lastSlot && lastSlot.d[b[0]] ? lastSlot.d[b[0]][0] : -999;
+        return bv - av;
+      });
+      out += members.map(([code,name], idx) => {
+        const cur = lastSlot ? lastSlot.d[code] : null;
+        const c = cur ? cur[0] : null;
+        const tcells = slots.map(s => {
+          const v = s.d[code];
+          return v ? `<td><span class="cell" style="background:${heat(v[0])}"
+              title="${name} ${hhmm(s.t)} · ${sign(v[0])}% · ${v[1].toLocaleString()}원"></span></td>`
+            : `<td><span class="cell empty"></span></td>`;
+        }).join("");
+        return `<tr class="trow">
+          <td class="sticky-l"><div class="tname">
+            <span class="code">${code}</span>
+            <span class="n">${idx===0 ? '<span class="crown">★</span> ' : ""}${name}</span>
+            <span class="chg ${c===null?"flat":cls(c)}">${c===null ? "—" : sign(c)+"%"}</span>
+          </div></td>${tcells}${pad}</tr>`;
+      }).join("");
+    }
+    return out;
+  }).join("");
+
+  $("#matrix tbody").innerHTML = body ||
+    `<tr><td class="sticky-l"><span class="empty-note">데이터 없음</span></td></tr>`;
+}
+
+function renderDetail(){
+  const el = $("#detail");
+  if (!selected || !DATA.slots.length){
+    el.innerHTML = `<h2>구간 상세</h2>
+      <div class="dsub">매트릭스에서 셀을 클릭하면 그 시각·그 섹터의 종목 순위가 여기에 표시됩니다.</div>`;
+    return;
+  }
+  const slot = DATA.slots[selected.i];
+  const a = agg(slot, selected.sector);
+  if (!a){ el.innerHTML = `<h2>${selected.sector}</h2><div class="dsub">해당 구간 데이터 없음</div>`; return; }
+
+  const rows = DATA.universe[selected.sector]
+    .map(([code,name]) => ({code, name, r: slot.d[code]}))
+    .filter(x => x.r)
+    .sort((x,y) => y.r[0] - x.r[0]);
+  const maxAmt = Math.max(...rows.map(x => x.r[2]), 1);
+
+  el.innerHTML = `
+    <h2>${selected.sector} <span style="font-size:12px;color:var(--ink-faint);font-family:var(--mono)">
+      ${hhmm(slot.t)}</span></h2>
+    <div class="dsub">평균 <b class="${cls(a.chg)}">${sign(a.chg)}%</b>
+      · 상승 ${a.up} / 하락 ${a.down} (총 ${a.n}) · 거래대금 ${amtText(a.amt)}
+      · 주도주 <b>${a.leader.name}</b> <b class="${cls(a.leader.chg)}">${sign(a.leader.chg)}%</b></div>
+    <table class="dtable">
+      <thead><tr><th>#</th><th>종목</th><th>등락률</th><th>현재가</th><th>거래대금</th><th style="width:26%">비중</th></tr></thead>
+      <tbody>${rows.map((x,i) => `
+        <tr>
+          <td>${i+1}</td>
+          <td>${i===0 ? '<span class="crown">★</span> ' : ""}${x.name}
+              <span style="color:var(--ink-faint);font-family:var(--mono);font-size:10px">${x.code}</span></td>
+          <td class="${cls(x.r[0])}"><b>${sign(x.r[0])}%</b></td>
+          <td>${x.r[1].toLocaleString()}</td>
+          <td>${amtText(x.r[2])}</td>
+          <td><div class="bar" style="width:${(x.r[2]/maxAmt*100).toFixed(1)}%;
+              background:${x.r[0]>=0?"var(--up)":"var(--down)"}"></div></td>
+        </tr>`).join("")}</tbody>
+    </table>`;
+}
+
+function render(){
+  renderStamp();
+  const rows = buildRows();
+  renderLeaders(rows);
+  renderMatrix(rows);
+  renderDetail();
+  if (curView === "rank") renderRank();
+}
+
+/* ---------------- 이벤트 ---------------- */
+document.addEventListener("click", e => {
+  const cell = e.target.closest(".cell[data-sector]");
+  if (cell){
+    selected = {sector: cell.dataset.sector, i: +cell.dataset.i};
+    render();
+    return;
+  }
+  const srow = e.target.closest(".srow");
+  if (srow && e.target.closest("td.sticky-l")){
+    const s = srow.dataset.sector;
+    openSectors.has(s) ? openSectors.delete(s) : openSectors.add(s);
+    render();
+  }
+});
+
+document.querySelectorAll("[data-sort]").forEach(b => b.addEventListener("click", () => {
+  sortKey = b.dataset.sort;
+  document.querySelectorAll("[data-sort]").forEach(x =>
+    x.setAttribute("aria-pressed", String(x === b)));
+  render();
+}));
+
+$("#expandAll").addEventListener("click", e => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+  openSectors = on ? new Set(Object.keys(DATA.universe)) : new Set();
+  render();
+});
+
+$("#autoBtn").addEventListener("click", e => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+  if (autoTimer){ clearInterval(autoTimer); autoTimer = null; }
+  if (on) autoTimer = setInterval(() => location.reload(), 60000);
+});
+
+// 날짜 전환 — 정적 호스팅(깃허브 페이지)에서는 data/YYYYMMDD.json 을 직접 불러온다
+const sel = $("#dateSel");
+sel.innerHTML = (PAYLOAD.available_dates || [PAYLOAD.date]).slice().reverse()
+  .map(d => `<option value="${d}"${d===PAYLOAD.date?" selected":""}>${d.slice(4,6)}/${d.slice(6)}</option>`).join("");
+sel.addEventListener("change", async () => {
+  const d = sel.value;
+  if (d === DATA.date) return;
+  try{
+    const res = await fetch(`data/${d}.json`, {cache:"no-store"});
+    const day = await res.json();
+    DATA = {...PAYLOAD, date: day.date, updated_at: day.updated_at, slots: day.slots};
+    selected = null; rankIdx = null; render();
+  }catch(err){
+    alert("과거 날짜는 웹 서버로 열었을 때만 조회할 수 있습니다 (file:// 제한).");
+    sel.value = DATA.date;
+  }
+});
+
+/* ---------------- 매수금액 TOP 30 ---------------- */
+let curView   = "matrix";   // 현재 탭
+let rankIdx   = null;       // 순위표 기준 슬롯 (null = 가장 최근)
+
+// 종목코드 -> 우리 섹터 유니버스상의 섹터명 (없으면 null)
+const CODE2SEC = (() => {
+  const m = {};
+  for (const [sec, members] of Object.entries(PAYLOAD.universe))
+    for (const [code] of members) m[code] = sec;
+  return m;
+})();
+
+// 순위 데이터가 실제로 들어있는 슬롯만 대상으로
+function rankSlots(){ return DATA.slots.filter(s => s.r && s.r.length); }
+
+function activeRankIdx(){
+  const rs = rankSlots();
+  if (!rs.length) return -1;
+  const idx = DATA.slots.indexOf(rs[rs.length - 1]);
+  return (rankIdx === null || !DATA.slots[rankIdx]?.r?.length) ? idx : rankIdx;
+}
+
+function renderRank(){
+  const i = activeRankIdx();
+  const sel = $("#rankSlot");
+  const rs = rankSlots();
+
+  sel.innerHTML = rs.map(s => {
+    const k = DATA.slots.indexOf(s);
+    return `<option value="${k}"${k===i?" selected":""}>${hhmm(s.t)}</option>`;
+  }).join("");
+
+  if (i < 0){
+    $("#rankStats").innerHTML = "";
+    $("#rankConc").innerHTML = `<div class="empty-note">아직 수집된 순위 데이터가 없습니다.</div>`;
+    $("#rankTable thead").innerHTML = "";
+    $("#rankTable tbody").innerHTML = "";
+    return;
+  }
+
+  const rowsAll = DATA.slots[i].r;
+  // 직전(순위가 있는) 슬롯과 비교해 순위 변동을 계산
+  const prevSlot = rankSlots().filter(s => DATA.slots.indexOf(s) < i).pop();
+  const prevRank = {};
+  if (prevSlot) prevSlot.r.forEach((x, k) => { prevRank[x[0]] = k + 1; });
+
+  const rows = rowsAll;
+
+  // ── 요약 지표
+  const totalAmt = rowsAll.reduce((a, x) => a + x[4], 0);
+  const kospiAmt = rowsAll.filter(x => x[7] === "코스피").reduce((a, x) => a + x[4], 0);
+  const kospiCnt = rowsAll.filter(x => x[7] === "코스피").length;
+  const upCnt    = rowsAll.filter(x => x[3] > 0).length;
+  const newCnt   = prevSlot ? rowsAll.filter(x => !(x[0] in prevRank)).length : 0;
+  $("#rankStats").innerHTML = `
+    <div class="stat"><div class="k">상위 30 거래대금</div>
+      <div class="v">${amtText(totalAmt)}</div>
+      <div class="s">코스피 ${kospiCnt}종목 ${amtText(kospiAmt)} · 코스닥 ${rowsAll.length-kospiCnt}종목 ${amtText(totalAmt-kospiAmt)}</div></div>
+    <div class="stat"><div class="k">상승 / 하락</div>
+      <div class="v"><span class="up">${upCnt}</span> <span style="color:var(--ink-faint)">/</span>
+        <span class="down">${rowsAll.length-upCnt}</span></div>
+      <div class="s">30종목 기준</div></div>
+    <div class="stat"><div class="k">신규 진입</div>
+      <div class="v ${newCnt?"":"flat"}">${prevSlot ? newCnt : "—"}</div>
+      <div class="s">${prevSlot ? "직전 "+hhmm(prevSlot.t)+" 대비" : "비교할 직전 슬롯 없음"}</div></div>
+    <div class="stat"><div class="k">1위 종목</div>
+      <div class="v" style="font-size:16px">${rowsAll[0][1]}</div>
+      <div class="s ${cls(rowsAll[0][3])}">${sign(rowsAll[0][3])}% · ${amtText(rowsAll[0][4])}</div></div>`;
+
+  // ── 섹터 쏠림: 상위 30의 거래대금을 우리 섹터 기준으로 묶는다
+  const bySec = {};
+  for (const x of rowsAll){
+    const key = CODE2SEC[x[0]] || "기타(유니버스 외)";
+    bySec[key] = (bySec[key] || 0) + x[4];
+  }
+  const concRows = Object.entries(bySec).sort((a,b) => b[1]-a[1]).slice(0,7);
+  const maxC = concRows.length ? concRows[0][1] : 1;
+  $("#rankConc").innerHTML = `<h3>상위 30 자금 쏠림 (거래대금 기준)</h3>` +
+    concRows.map(([k,v]) => `<div class="crow">
+      <span class="nm">${k}</span>
+      <span class="tr"><i style="width:${(v/maxC*100).toFixed(1)}%"></i></span>
+      <span class="pv">${amtText(v)} · ${(v/totalAmt*100).toFixed(1)}%</span>
+    </div>`).join("");
+
+  // ── 순위표
+  $("#rankTable thead").innerHTML = `<tr>
+    <th>#</th><th>변동</th><th>종목</th><th>섹터</th>
+    <th>등락률</th><th>현재가</th><th>거래대금</th><th style="width:15%">비중</th>
+    <th>거래량</th><th>거래량증가율</th></tr>`;
+
+  const maxAmt = Math.max(...rows.map(x => x[4]), 1);
+  $("#rankTable tbody").innerHTML = rows.map(x => {
+    const [code, name, price, chg, amt, vol, vinr, market] = x;
+    const rk = rowsAll.indexOf(x) + 1;
+    const pv = prevRank[code];
+    let mv = `<span class="same">—</span>`;
+    if (prevSlot){
+      if (pv === undefined) mv = `<span class="new">NEW</span>`;
+      else if (pv > rk) mv = `<span class="up-a">▲${pv-rk}</span>`;
+      else if (pv < rk) mv = `<span class="dn-a">▼${rk-pv}</span>`;
+    }
+    const sec = CODE2SEC[code]
+      ? `<span class="sectag">${CODE2SEC[code]}</span>`
+      : `<span class="sectag etf">${market}</span>`;
+    return `<tr class="${rk<=3?"top3":""}">
+      <td class="rk">${rk}</td>
+      <td class="mv">${mv}</td>
+      <td class="nm">${name} <span style="color:var(--ink-faint);font-size:10px">${code}</span></td>
+      <td class="sec">${sec}</td>
+      <td class="${cls(chg)}"><b>${sign(chg)}%</b></td>
+      <td>${price.toLocaleString()}</td>
+      <td>${amtText(amt)}</td>
+      <td><span class="amtbar" style="width:${(amt/maxAmt*100).toFixed(1)}%"></span></td>
+      <td>${vol.toLocaleString()}</td>
+      <td class="${vinr>=100?"up":"flat"}">${vinr.toFixed(0)}%</td>
+    </tr>`;
+  }).join("");
+}
+
+function setView(v){
+  curView = v;
+  document.querySelectorAll('[role="tab"]').forEach(b =>
+    b.setAttribute("aria-selected", String(b.dataset.view === v)));
+  $("#view-matrix").hidden = v !== "matrix";
+  $("#view-rank").hidden   = v !== "rank";
+  if (v === "rank") renderRank();
+}
+
+document.querySelectorAll('[role="tab"]').forEach(b =>
+  b.addEventListener("click", () => setView(b.dataset.view)));
+
+$("#rankSlot").addEventListener("change", e => { rankIdx = +e.target.value; renderRank(); });
+
+render();
+</script>
+</body>
+</html>
