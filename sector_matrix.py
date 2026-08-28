@@ -54,6 +54,11 @@ PROGRAM_TR_ID = "FHPPG04650100"
 FLOW_ENDPOINT = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
 FLOW_TR_ID = "FHPTJ04400000"
 
+# 종목별 투자자 매매동향 — 전일까지 확정치는 매수/매도/순매수를 전부 주지만,
+# 당일(장중) 행은 항상 빈 문자열이라 사실상 "전일 확정" 용도로만 쓸 수 있다.
+INVESTOR_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-investor"
+INVESTOR_TR_ID = "FHKST01010900"
+
 # 정규장 09:00 ~ 15:30 을 10분 단위로 자른 슬롯 라벨
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
@@ -139,7 +144,7 @@ def etf_codes() -> set[str]:
 def fetch_program_trade(code: str, retries: int = 2) -> list | None:
     """
     종목 하나의 프로그램매매 잠정치를 조회 (장중에도 실시간으로 채워짐).
-    반환: [프로그램매도량, 프로그램매수량, 프로그램순매수량, 프로그램순매수대금(억)]
+    반환: [매도량, 매수량, 순매수량, 매도대금(억), 매수대금(억), 순매수대금(억)]
     """
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -169,8 +174,58 @@ def fetch_program_trade(code: str, retries: int = 2) -> list | None:
                 int(_f(o.get("whol_smtn_seln_vol"))),
                 int(_f(o.get("whol_smtn_shnu_vol"))),
                 int(_f(o.get("whol_smtn_ntby_qty"))),
+                round(_f(o.get("whol_smtn_seln_tr_pbmn")) / 1e8, 1),
+                round(_f(o.get("whol_smtn_shnu_tr_pbmn")) / 1e8, 1),
                 round(_f(o.get("whol_smtn_ntby_tr_pbmn")) / 1e8, 1),
             ]
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def fetch_investor_daily(code: str, retries: int = 2) -> list | None:
+    """
+    종목 하나의 '전일까지 확정된' 외국인/기관/개인 매수·매도·순매수를 조회.
+    당일(장중) 값은 KIS 쪽에서 항상 빈 문자열로 내려오므로, 값이 채워진 가장 최근 날짜
+    (보통 전일)의 행을 찾아서 쓴다 — 프로그램매매처럼 실시간 잠정치가 아니라 "확정치".
+    반환: [기준일자, 외국인[매도량,매수량,순매수량,매도대금(억),매수대금(억),순매수대금(억)],
+                     기관[같은 구성], 개인[같은 구성]]  (조회 실패/전부 공백이면 None)
+    """
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": INVESTOR_TR_ID,
+        "custtype": "P",
+    }
+    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
+
+    def trio(row: dict, prefix: str) -> list:
+        # 이 API의 _tr_pbmn 필드는 백만원 단위 (프로그램매매 API의 원 단위와 다름) -> /100 해야 억원
+        return [
+            int(_f(row.get(f"{prefix}_seln_vol"))),
+            int(_f(row.get(f"{prefix}_shnu_vol"))),
+            int(_f(row.get(f"{prefix}_ntby_qty"))),
+            round(_f(row.get(f"{prefix}_seln_tr_pbmn")) / 100, 1),
+            round(_f(row.get(f"{prefix}_shnu_tr_pbmn")) / 100, 1),
+            round(_f(row.get(f"{prefix}_ntby_tr_pbmn")) / 100, 1),
+        ]
+
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + INVESTOR_ENDPOINT, headers=headers,
+                                params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            for row in data.get("output", []):
+                if str(row.get("frgn_ntby_qty", "")).strip() == "":
+                    continue   # 당일(장중) 행 — 아직 확정 전이라 건너뜀
+                return [row.get("stck_bsop_date"), trio(row, "frgn"), trio(row, "orgn"), trio(row, "prsn")]
+            return None
         except Exception:
             time.sleep(0.5 * (attempt + 1))
     return None
@@ -234,11 +289,16 @@ def fetch_top_amount(retries: int = 3) -> list:
     코스피(0001)·코스닥(1001)을 따로 조회한 뒤 합쳐서 다시 정렬한다.
       - 시장 전체(0000)로 조회하면 KODEX·TIGER 같은 ETF가 절반 넘게 차지해버림
       - 시장별로 조회하면 ETF가 섞이지 않아 개별종목만으로 30위를 채울 수 있음
-    이어서 종목별 프로그램매매(전 종목 커버)와 외국인/기관 잠정 순매수
-    (상위 랭킹에 걸린 종목만 커버, 나머지는 null)를 덧붙인다.
+    이어서 3가지 수급 데이터를 덧붙인다.
+      - 외국인/기관: 장중 잠정 순매수 (상위 랭킹에 걸린 종목만 커버, 매수/매도 개별 조회는 API 미지원)
+      - 프로그램매매: 장중 잠정 매수/매도/순매수 (전 종목 커버)
+      - 전일 확정: 외국인/기관/개인 각각 매수/매도/순매수 (전일까지 확정치, 당일 데이터 없음)
     반환: [코드, 종목명, 현재가, 등락률, 거래대금(억), 거래량, 거래량증가율, 시장,
            외국인순매수량|null, 외국인순매수대금(억)|null, 기관순매수량|null, 기관순매수대금(억)|null,
-           프로그램순매수량|null, 프로그램순매수대금(억)|null] 리스트
+           프로그램순매수량|null, 프로그램순매수대금(억)|null,
+           프로그램매수량|null, 프로그램매도량|null, 프로그램매수대금(억)|null, 프로그램매도대금(억)|null,
+           전일확정[기준일자,외국인[매도량,매수량,순매수량,매도대금,매수대금,순매수대금],
+                    기관[..],개인[..]]|null] 리스트
     """
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -309,7 +369,14 @@ def fetch_top_amount(retries: int = 3) -> list:
 
         prog = fetch_program_trade(code)
         row.append(prog[2] if prog else None)   # 프로그램순매수량
-        row.append(prog[3] if prog else None)   # 프로그램순매수대금(억)
+        row.append(prog[5] if prog else None)   # 프로그램순매수대금(억)
+        row.append(prog[1] if prog else None)   # 프로그램매수량
+        row.append(prog[0] if prog else None)   # 프로그램매도량
+        row.append(prog[4] if prog else None)   # 프로그램매수대금(억)
+        row.append(prog[3] if prog else None)   # 프로그램매도대금(억)
+        time.sleep(REQ_INTERVAL)
+
+        row.append(fetch_investor_daily(code))  # 전일 확정 외국인/기관/개인 매수·매도·순매수 (없으면 None)
         time.sleep(REQ_INTERVAL)
 
     return top30
