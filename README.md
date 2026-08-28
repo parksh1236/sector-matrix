@@ -93,3 +93,7 @@ launchctl bootout gui/$(id -u)/com.parksh.sector-matrix
 ## 주의
 
 종목코드는 상장폐지·사명변경이 잦습니다. 섹터 구성을 손볼 때는 KRX 코드 마스터로 한 번 대조하는 편이 안전합니다.
+
+## 라이선스
+
+[MIT](LICENSE) — 출처만 표시하면 자유롭게 가져다 쓰셔도 됩니다.
