@@ -191,6 +191,7 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
   <div class="hctl">
     <span id="live" class="badge">—</span>
     <select id="dateSel" title="날짜 선택"></select>
+    <span id="nowClock" class="badge" title="현재 시각">—</span>
     <button class="tog" id="autoBtn" aria-pressed="false" title="60초마다 자동 새로고침">자동갱신</button>
   </div>
 </header>
@@ -652,6 +653,19 @@ document.querySelectorAll('[role="tab"]').forEach(b =>
   b.addEventListener("click", () => setView(b.dataset.view)));
 
 $("#rankSlot").addEventListener("change", e => { rankIdx = +e.target.value; renderRank(); });
+
+
+/* ---------------- 현재 시각 배지 ---------------- */
+function tickClock(){
+  const now = new Date();
+  const kst = new Date(now.toLocaleString("en-US", {timeZone:"Asia/Seoul"}));
+  const hh = String(kst.getHours()).padStart(2,"0");
+  const mm = String(kst.getMinutes()).padStart(2,"0");
+  const ss = String(kst.getSeconds()).padStart(2,"0");
+  $("#nowClock").textContent = `현재 ${hh}:${mm}:${ss}`;
+}
+tickClock();
+setInterval(tickClock, 1000);
 
 render();
 </script>
