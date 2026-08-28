@@ -45,6 +45,15 @@ PRICE_TR_ID = "FHKST01010100"
 RANK_ENDPOINT = "/uapi/domestic-stock/v1/quotations/volume-rank"
 RANK_TR_ID = "FHPST01710000"
 
+# 종목별 프로그램매매 추이 (전 종목 개별 조회 가능, 장중 잠정치)
+PROGRAM_ENDPOINT = "/uapi/domestic-stock/v1/quotations/program-trade-by-stock"
+PROGRAM_TR_ID = "FHPPG04650100"
+
+# 외국인/기관 매매종목가집계 — "장중 잠정 상위 랭킹" 화면이라 특정 종목을 찍어 조회할 수는 없고,
+# 순매수/순매도 상위 몇십 종목만 알려준다. 우리 상위 30종목 중 이 랭킹에 걸린 것만 값이 채워짐.
+FLOW_ENDPOINT = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
+FLOW_TR_ID = "FHPTJ04400000"
+
 # 정규장 09:00 ~ 15:30 을 10분 단위로 자른 슬롯 라벨
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
@@ -127,13 +136,109 @@ def etf_codes() -> set[str]:
     return _etf_cache
 
 
+def fetch_program_trade(code: str, retries: int = 2) -> list | None:
+    """
+    종목 하나의 프로그램매매 잠정치를 조회 (장중에도 실시간으로 채워짐).
+    반환: [프로그램매도량, 프로그램매수량, 프로그램순매수량, 프로그램순매수대금(억)]
+    """
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": PROGRAM_TR_ID,
+        "custtype": "P",
+    }
+    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
+
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + PROGRAM_ENDPOINT, headers=headers,
+                                params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            o = data.get("output") or {}
+            if isinstance(o, list):        # 이 API는 output 을 배열로 줌 (첫 번째가 최신 시각)
+                o = o[0] if o else {}
+            if not o:
+                return None
+            return [
+                int(_f(o.get("whol_smtn_seln_vol"))),
+                int(_f(o.get("whol_smtn_shnu_vol"))),
+                int(_f(o.get("whol_smtn_ntby_qty"))),
+                round(_f(o.get("whol_smtn_ntby_tr_pbmn")) / 1e8, 1),
+            ]
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def fetch_investor_flow_rank(retries: int = 2) -> dict:
+    """
+    외국인/기관 매매종목가집계(장중 잠정 상위 랭킹)를 4가지 정렬로 모아 병합.
+      - KIS API 특성상 특정 종목을 찍어 조회할 수 없고, 순매수/순매도 상위 30위 랭킹만 제공됨
+      - '합산 순매수상위·순매도상위' + '외국인 순매수상위·순매도상위' 4개를 모으면
+        움직임이 큰 종목은 대부분 걸리지만, 랭킹 밖으로 밀린 종목은 값이 아예 없음(구조적 한계)
+    반환: {종목코드: [외국인순매수량, 기관순매수량, 외국인순매수대금(억), 기관순매수대금(억)]}
+    """
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": FLOW_TR_ID,
+        "custtype": "P",
+    }
+    base_params = {
+        "FID_COND_MRKT_DIV_CODE": "V",     # V = 전체시장
+        "FID_COND_SCR_DIV_CODE": "16449",  # 화면번호(고정값)
+        "FID_INPUT_ISCD": "0000",
+        "FID_ETC_CLS_CODE": "0",
+    }
+
+    flow: dict = {}
+    # DIV=0(외국인+기관 합산 기준) / DIV=1(외국인 단독 기준) × SORT=0(순매수상위) / SORT=1(순매도상위)
+    for div in ("0", "1"):
+        for sort in ("0", "1"):
+            params = {**base_params, "FID_DIV_CLS_CODE": div, "FID_RANK_SORT_CLS_CODE": sort}
+            for attempt in range(retries):
+                try:
+                    headers["authorization"] = f"Bearer {get_access_token()}"
+                    resp = requests.get(BASE_URL + FLOW_ENDPOINT, headers=headers,
+                                        params=params, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if data.get("rt_cd") != "0":
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    for o in data.get("output", []):
+                        code = str(o.get("mksc_shrn_iscd", "")).strip()
+                        flow[code] = [
+                            int(_f(o.get("frgn_ntby_qty"))),
+                            int(_f(o.get("orgn_ntby_qty"))),
+                            round(_f(o.get("frgn_ntby_tr_pbmn")) / 100, 1),   # 백만원 -> 억원
+                            round(_f(o.get("orgn_ntby_tr_pbmn")) / 100, 1),
+                        ]
+                    break
+                except Exception:
+                    time.sleep(0.5 * (attempt + 1))
+            time.sleep(REQ_INTERVAL)
+    return flow
+
+
 def fetch_top_amount(retries: int = 3) -> list:
     """
     거래대금(매수금액) 상위 30종목을 조회.
     코스피(0001)·코스닥(1001)을 따로 조회한 뒤 합쳐서 다시 정렬한다.
       - 시장 전체(0000)로 조회하면 KODEX·TIGER 같은 ETF가 절반 넘게 차지해버림
       - 시장별로 조회하면 ETF가 섞이지 않아 개별종목만으로 30위를 채울 수 있음
-    반환: [코드, 종목명, 현재가, 등락률, 거래대금(억), 거래량, 거래량증가율, 시장] 리스트
+    이어서 종목별 프로그램매매(전 종목 커버)와 외국인/기관 잠정 순매수
+    (상위 랭킹에 걸린 종목만 커버, 나머지는 null)를 덧붙인다.
+    반환: [코드, 종목명, 현재가, 등락률, 거래대금(억), 거래량, 거래량증가율, 시장,
+           외국인순매수량|null, 외국인순매수대금(억)|null, 기관순매수량|null, 기관순매수대금(억)|null,
+           프로그램순매수량|null, 프로그램순매수대금(억)|null] 리스트
     """
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -191,7 +296,23 @@ def fetch_top_amount(retries: int = 3) -> list:
         time.sleep(REQ_INTERVAL)
 
     merged.sort(key=lambda x: -x[4])   # 거래대금 내림차순
-    return merged[:30]
+    top30 = merged[:30]
+
+    flow = fetch_investor_flow_rank()
+    for row in top30:
+        code = row[0]
+        f = flow.get(code)
+        row.append(f[0] if f else None)   # 외국인순매수량
+        row.append(f[2] if f else None)   # 외국인순매수대금(억)
+        row.append(f[1] if f else None)   # 기관순매수량
+        row.append(f[3] if f else None)   # 기관순매수대금(억)
+
+        prog = fetch_program_trade(code)
+        row.append(prog[2] if prog else None)   # 프로그램순매수량
+        row.append(prog[3] if prog else None)   # 프로그램순매수대금(억)
+        time.sleep(REQ_INTERVAL)
+
+    return top30
 
 
 def collect_snapshot() -> dict:

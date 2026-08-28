@@ -173,6 +173,7 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
 .mv .same{color:var(--ink-faint)}
 .amtbar{display:inline-block;vertical-align:middle;height:7px;border-radius:4px;
   background:linear-gradient(90deg,rgba(255,77,94,.85),rgba(255,138,77,.85));min-width:2px}
+.rtable td.flow-na{color:var(--ink-faint);opacity:.5;cursor:help}
 </style>
 </head>
 <body>
@@ -608,12 +609,24 @@ function renderRank(){
   // ── 순위표
   $("#rankTable thead").innerHTML = `<tr>
     <th>#</th><th>변동</th><th>종목</th><th>섹터</th>
-    <th>등락률</th><th>현재가</th><th>거래대금</th><th style="width:15%">비중</th>
-    <th>거래량</th><th>거래량증가율</th></tr>`;
+    <th>등락률</th><th>현재가</th><th>거래대금</th><th style="width:12%">비중</th>
+    <th>거래량</th><th>거래량증가율</th>
+    <th>외국인 순매수</th><th>기관 순매수</th><th>프로그램 순매수</th></tr>`;
+
+  // 외국인/기관/프로그램 순매수 셀 — amt(억원) 가 null 이면 그 시점 잠정 랭킹 밖이라 값이 없다는 뜻
+  function flowCell(qty, amt){
+    if (amt === null || amt === undefined){
+      return `<td class="flow-na" title="장중 잠정 상위 랭킹 밖이라 조회 불가">—</td>`;
+    }
+    const qtyTx = qty === null ? "" :
+      (Math.abs(qty) >= 10000 ? `${(qty/10000).toFixed(1)}만주` : `${qty.toLocaleString()}주`);
+    return `<td class="${cls(amt)}" title="${qtyTx}"><b>${amt>=0?"+":""}${amt.toLocaleString()}억</b></td>`;
+  }
 
   const maxAmt = Math.max(...rows.map(x => x[4]), 1);
   $("#rankTable tbody").innerHTML = rows.map(x => {
-    const [code, name, price, chg, amt, vol, vinr, market] = x;
+    const [code, name, price, chg, amt, vol, vinr, market,
+           frgnQty, frgnAmt, orgnQty, orgnAmt, progQty, progAmt] = x;
     const rk = rowsAll.indexOf(x) + 1;
     const pv = prevRank[code];
     let mv = `<span class="same">—</span>`;
@@ -636,6 +649,9 @@ function renderRank(){
       <td><span class="amtbar" style="width:${(amt/maxAmt*100).toFixed(1)}%"></span></td>
       <td>${vol.toLocaleString()}</td>
       <td class="${vinr>=100?"up":"flat"}">${vinr.toFixed(0)}%</td>
+      ${flowCell(frgnQty, frgnAmt)}
+      ${flowCell(orgnQty, orgnAmt)}
+      ${flowCell(progQty, progAmt)}
     </tr>`;
   }).join("");
 }
