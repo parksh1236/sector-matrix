@@ -181,7 +181,9 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
 /* ---------- 종목 수급 상세(매수/매도/순매수) ---------- */
 .dtable-flow th{text-align:center !important}
 .dtable-flow td{text-align:center;vertical-align:middle}
-.dtable-flow td.dlabel{text-align:left;font-family:var(--sans);font-weight:650;color:var(--ink-dim)}
+.dtable-flow td.dlabel{text-align:left;font-family:var(--sans);font-weight:650;color:var(--ink-dim);
+  white-space:nowrap;min-width:74px}
+.dtable-flow th:first-child{min-width:74px}
 .ddir{display:flex;flex-direction:column;align-items:center;line-height:1.3}
 .ddir .dv{font-weight:700;font-size:13px}
 .ddir .dv.na{color:var(--ink-faint);font-weight:400}
