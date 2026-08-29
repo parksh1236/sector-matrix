@@ -302,10 +302,10 @@ function agg(slot, sector){
   for (const [code, name] of members){
     const r = slot.d[code];
     if (!r) continue;
-    const [chg, price, a] = r;
+    const [chg, price, a, cap] = r;
     sum += chg; n++; amt += a;
     if (chg > 0) up++; else if (chg < 0) down++;
-    if (!best || chg > best.chg) best = {code, name, chg, price, amt:a};
+    if (!best || chg > best.chg) best = {code, name, chg, price, amt:a, cap};
   }
   if (!n) return null;
   return {chg: sum/n, amt, up, down, n, leader: best};
@@ -458,7 +458,7 @@ function renderDetail(){
       · 상승 ${a.up} / 하락 ${a.down} (총 ${a.n}) · 거래대금 ${amtText(a.amt)}
       · 주도주 <b>${a.leader.name}</b> <b class="${cls(a.leader.chg)}">${sign(a.leader.chg)}%</b></div>
     <table class="dtable">
-      <thead><tr><th>#</th><th>종목</th><th>등락률</th><th>현재가</th><th>거래대금</th><th style="width:26%">비중</th></tr></thead>
+      <thead><tr><th>#</th><th>종목</th><th>등락률</th><th>현재가</th><th>시가총액</th><th>거래대금</th><th style="width:26%">비중</th></tr></thead>
       <tbody>${rows.map((x,i) => `
         <tr>
           <td>${i+1}</td>
@@ -466,6 +466,7 @@ function renderDetail(){
               <span style="color:var(--ink-faint);font-family:var(--mono);font-size:11px">${x.code}</span></td>
           <td class="${cls(x.r[0])}"><b>${sign(x.r[0])}%</b></td>
           <td>${x.r[1].toLocaleString()}</td>
+          <td>${x.r[3]==null ? "—" : amtText(x.r[3])}</td>
           <td>${amtText(x.r[2])}</td>
           <td><div class="bar" style="width:${(x.r[2]/maxAmt*100).toFixed(1)}%;
               background:${x.r[0]>=0?"var(--up)":"var(--down)"}"></div></td>
@@ -632,7 +633,7 @@ function renderRank(){
   // ── 순위표
   $("#rankTable thead").innerHTML = `<tr>
     <th>#</th><th>변동</th><th>종목</th><th>섹터</th>
-    <th>등락률</th><th>현재가</th><th>거래대금</th><th style="width:12%">비중</th>
+    <th>등락률</th><th>현재가</th><th>시가총액</th><th>거래대금</th><th style="width:12%">비중</th>
     <th>거래량</th><th>거래량증가율</th>
     <th>외국인 순매수</th><th>기관 순매수</th><th>프로그램 순매수</th></tr>`;
 
@@ -650,6 +651,7 @@ function renderRank(){
   $("#rankTable tbody").innerHTML = rows.map(x => {
     const [code, name, price, chg, amt, vol, vinr, market,
            frgnQty, frgnAmt, orgnQty, orgnAmt, progQty, progAmt] = x;
+    const cap = x[19];   // 시가총액(억) — 뒤쪽에 순서대로 이어붙인 필드라 인덱스로 직접 접근
     const rk = rowsAll.indexOf(x) + 1;
     const pv = prevRank[code];
     let mv = `<span class="same">—</span>`;
@@ -668,6 +670,7 @@ function renderRank(){
       <td class="sec">${sec}</td>
       <td class="${cls(chg)}"><b>${sign(chg)}%</b></td>
       <td>${price.toLocaleString()}</td>
+      <td>${cap==null ? "—" : amtText(cap)}</td>
       <td>${amtText(amt)}</td>
       <td><span class="amtbar" style="width:${(amt/maxAmt*100).toFixed(1)}%"></span></td>
       <td>${vol.toLocaleString()}</td>
@@ -725,12 +728,14 @@ function renderRankDetail(rowsAll){
     return;
   }
   const [code, name, , , , , , , frgnQty, frgnAmt, orgnQty, orgnAmt, progQty, progAmt,
-         progBuyQty, progSellQty, progBuyAmt, progSellAmt, daily] = row;
+         progBuyQty, progSellQty, progBuyAmt, progSellAmt, daily, cap] = row;
 
   const progTrio = progQty === null ? null : [progSellQty, progBuyQty, progQty, progSellAmt, progBuyAmt, progAmt];
 
   el.innerHTML = `
-    <h2>${name} <span style="font-size:12px;color:var(--ink-faint);font-family:var(--mono)">${code}</span></h2>
+    <h2>${name} <span style="font-size:12px;color:var(--ink-faint);font-family:var(--mono)">${code}</span>
+      ${cap!=null ? `<span style="font-size:12px;color:var(--ink-dim);font-family:var(--mono);margin-left:6px">
+        · 시총 ${amtText(cap)}</span>` : ""}</h2>
     <div class="dsub">오늘 장중 잠정치 — 외국인·기관은 KIS API 특성상 매수/매도 개별 조회가 안 되어 순매수만 제공됩니다</div>
     <table class="dtable dtable-flow">
       <thead><tr><th style="text-align:left">구분</th><th>매도</th><th>매수</th><th>순매수</th></tr></thead>

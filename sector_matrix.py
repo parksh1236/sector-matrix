@@ -298,7 +298,8 @@ def fetch_top_amount(retries: int = 3) -> list:
            프로그램순매수량|null, 프로그램순매수대금(억)|null,
            프로그램매수량|null, 프로그램매도량|null, 프로그램매수대금(억)|null, 프로그램매도대금(억)|null,
            전일확정[기준일자,외국인[매도량,매수량,순매수량,매도대금,매수대금,순매수대금],
-                    기관[..],개인[..]]|null] 리스트
+                    기관[..],개인[..]]|null,
+           시가총액(억)|null] 리스트
     """
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -322,6 +323,7 @@ def fetch_top_amount(retries: int = 3) -> list:
 
     etfs = etf_codes()
     merged: list = []
+    shares: dict = {}   # {종목코드: 상장주수} — 시가총액 계산용, volume-rank 응답에 이미 들어있음
 
     for iscd, market in (("0001", "코스피"), ("1001", "코스닥")):
         params = {**base_params, "FID_INPUT_ISCD": iscd}
@@ -340,6 +342,7 @@ def fetch_top_amount(retries: int = 3) -> list:
                     name = str(o.get("hts_kor_isnm", "")).strip()
                     if code in etfs or looks_like_etf(name):   # 혹시 섞여 들어오면 한 번 더 걸러냄
                         continue
+                    shares[code] = _f(o.get("lstn_stcn"))
                     merged.append([
                         code,
                         name,
@@ -379,11 +382,14 @@ def fetch_top_amount(retries: int = 3) -> list:
         row.append(fetch_investor_daily(code))  # 전일 확정 외국인/기관/개인 매수·매도·순매수 (없으면 None)
         time.sleep(REQ_INTERVAL)
 
+        sh = shares.get(code)
+        row.append(round(row[2] * sh / 1e8, 0) if sh else None)   # 시가총액(억) = 현재가 × 상장주수
+
     return top30
 
 
 def collect_snapshot() -> dict:
-    """전 종목을 한 바퀴 돌며 {종목코드: [등락률, 현재가, 거래대금(억)]} 스냅샷을 만든다."""
+    """전 종목을 한 바퀴 돌며 {종목코드: [등락률, 현재가, 거래대금(억), 시가총액(억)]} 스냅샷을 만든다."""
     rows = all_tickers()
     snapshot: dict[str, list] = {}
     failed = []
@@ -396,7 +402,8 @@ def collect_snapshot() -> dict:
             chg = round(_f(out.get("prdy_ctrt")), 2)          # 전일대비 등락률 %
             price = int(_f(out.get("stck_prpr")))              # 현재가
             amount = round(_f(out.get("acml_tr_pbmn")) / 1e8, 1)  # 누적거래대금 -> 억원
-            snapshot[code] = [chg, price, amount]
+            cap = round(_f(out.get("hts_avls")), 0)             # 시가총액(이미 억원 단위로 내려옴)
+            snapshot[code] = [chg, price, amount, cap]
         if i % 20 == 0:
             print(f"  … {i}/{len(rows)} 수집", flush=True)
         time.sleep(REQ_INTERVAL)
