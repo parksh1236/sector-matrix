@@ -43,6 +43,31 @@ button.tog[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 
 /* ---------- 주도섹터 카드 ---------- */
+/* ---------- 코스피/코스닥 지수 차트 ---------- */
+.idx-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;margin-bottom:18px}
+.idx-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px 10px;position:relative}
+.idx-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.idx-name{font-size:14px;font-weight:700;letter-spacing:-.01em}
+.idx-val{font-family:var(--mono);font-size:20px;font-weight:700;letter-spacing:-.02em}
+.idx-chg{font-family:var(--mono);font-size:13px;font-weight:650}
+.idx-sub{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-top:2px}
+.idx-chartwrap{position:relative;margin-top:10px}
+.idx-chart{display:block;width:100%;height:96px;overflow:visible}
+.idx-chart .gridline{stroke:var(--line);stroke-width:1}
+.idx-chart .area{opacity:.12}
+.idx-chart .line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.idx-chart .dot{stroke-width:2;stroke:var(--panel)}
+.idx-chart .hit{fill:transparent;cursor:crosshair}
+.idx-crosshair{position:absolute;top:0;bottom:0;width:1px;background:var(--line);
+  pointer-events:none;opacity:0;transition:opacity .1s}
+.idx-tip{position:absolute;top:-2px;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:6px 9px;
+  font-family:var(--mono);font-size:11px;white-space:nowrap;z-index:5;box-shadow:0 4px 14px rgba(0,0,0,.35)}
+.idx-tip .t{color:var(--ink-faint);margin-bottom:2px}
+.idx-tip .v{font-weight:700;font-size:12.5px}
+.idx-empty{color:var(--ink-faint);font-size:12.5px;padding:20px 0;text-align:center}
+
 .leaders{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:20px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
   position:relative;overflow:hidden}
@@ -210,6 +235,8 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
     <button class="tog" id="autoBtn" aria-pressed="false" title="60초마다 자동 새로고침">자동갱신</button>
   </div>
 </header>
+
+<section class="idx-row" id="idxRow"></section>
 
 <div id="view-matrix">
 <section class="leaders" id="leaders"></section>
@@ -476,11 +503,117 @@ function renderDetail(){
 
 function render(){
   renderStamp();
+  renderIndices();
   const rows = buildRows();
   renderLeaders(rows);
   renderMatrix(rows);
   renderDetail();
   if (curView === "rank") renderRank();
+}
+
+/* ---------------- 코스피/코스닥 지수 차트 ---------------- */
+const IDX_LABEL = {KOSPI: "코스피", KOSDAQ: "코스닥"};
+
+function renderIndices(){
+  const el = $("#idxRow");
+  const names = Object.keys(IDX_LABEL);
+  el.innerHTML = names.map(name => idxCardHTML(name)).join("");
+  names.forEach(name => wireIdxChart(name));
+}
+
+function idxCardHTML(name){
+  // 이 이름(코스피/코스닥) 데이터가 있는 슬롯만 시계열로 사용 — 옛날 날짜엔 idx 필드가 없을 수 있음
+  const series = DATA.slots
+    .map(s => ({t: s.t, v: s.idx && s.idx[name]}))
+    .filter(x => x.v);
+  if (!series.length){
+    return `<div class="idx-card"><div class="idx-head"><span class="idx-name">${IDX_LABEL[name]}</span></div>
+      <div class="idx-empty">아직 수집된 지수 데이터가 없습니다</div></div>`;
+  }
+  const last = series[series.length - 1].v;
+  const [val, chg, chgPct, , , , amt, up, flat, down] = last;
+  const dir = chg > 0 ? "up" : chg < 0 ? "down" : "flat";
+  return `<div class="idx-card" data-idx="${name}">
+    <div class="idx-head">
+      <span class="idx-name">${IDX_LABEL[name]}</span>
+      <span class="idx-val">${val.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+      <span class="idx-chg ${dir}">${sign(chg)} (${sign(chgPct)}%)</span>
+    </div>
+    <div class="idx-sub">거래대금 ${amtText(amt)} · 상승 ${up} · 보합 ${flat} · 하락 ${down}</div>
+    <div class="idx-chartwrap">
+      <svg class="idx-chart" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
+      <div class="idx-crosshair"></div>
+      <div class="idx-tip"></div>
+    </div>
+  </div>`;
+}
+
+function wireIdxChart(name){
+  const card = document.querySelector(`.idx-card[data-idx="${name}"]`);
+  if (!card) return;
+  const series = DATA.slots
+    .map(s => ({t: s.t, v: s.idx && s.idx[name]}))
+    .filter(x => x.v);
+  if (series.length < 2) return;   // 점 하나로는 선을 그릴 수 없음
+
+  const svg = card.querySelector(".idx-chart");
+  const wrap = card.querySelector(".idx-chartwrap");
+  const crosshair = card.querySelector(".idx-crosshair");
+  const tip = card.querySelector(".idx-tip");
+
+  const W = 600, H = 96, PAD = 6;
+  const vals = series.map(s => s.v[0]);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = (hi - lo) || 1;
+  const x = i => series.length === 1 ? W/2 : (i / (series.length - 1)) * W;
+  const y = v => H - PAD - ((v - lo) / span) * (H - PAD*2);
+
+  const dir = series[series.length-1].v[1] > 0 ? "up" : series[series.length-1].v[1] < 0 ? "down" : "flat";
+  const color = `var(--${dir === "flat" ? "ink-faint" : dir})`;
+
+  const linePts = series.map((s,i) => `${x(i).toFixed(2)},${y(s.v[0]).toFixed(2)}`).join(" ");
+  const areaPts = `0,${H} ${linePts} ${W},${H}`;
+  const lastX = x(series.length-1), lastY = y(series[series.length-1].v[0]);
+
+  // 촘촘한 hit 영역(각 슬롯 사이 폭) — pointermove 로 가장 가까운 지점을 찾는 대신
+  // 슬롯 개수만큼의 투명 세로 밴드를 깔아 hover 정확도를 보장한다
+  const bandW = W / series.length;
+  const hitBands = series.map((s,i) =>
+    `<rect class="hit" data-i="${i}" x="${(i*bandW).toFixed(2)}" y="0" width="${bandW.toFixed(2)}" height="${H}"></rect>`
+  ).join("");
+
+  svg.innerHTML = `
+    <line class="gridline" x1="0" y1="${y(lo).toFixed(1)}" x2="${W}" y2="${y(lo).toFixed(1)}"></line>
+    <polygon class="area" points="${areaPts}" fill="${color}"></polygon>
+    <polyline class="line" points="${linePts}" stroke="${color}"></polyline>
+    <circle class="dot" cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="4" fill="${color}"></circle>
+    ${hitBands}`;
+
+  function showAt(i){
+    const s = series[i];
+    const [val, chg, chgPct] = s.v;
+    const dirI = chg > 0 ? "up" : chg < 0 ? "down" : "flat";
+    const px = (x(i) / W) * 100;
+    crosshair.style.left = px + "%";
+    crosshair.style.opacity = "1";
+    tip.style.opacity = "1";
+    tip.style.left = `clamp(0%, ${px}%, calc(100% - 90px))`;
+    tip.innerHTML = `<div class="t">${hhmm(s.t)}</div>
+      <div class="v">${val.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+      <span class="${dirI}">${sign(chgPct)}%</span></div>`;
+  }
+  function hide(){
+    crosshair.style.opacity = "0";
+    tip.style.opacity = "0";
+  }
+
+  wrap.addEventListener("pointermove", e => {
+    const rect = svg.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const i = Math.min(series.length-1, Math.max(0, Math.floor(relX * series.length)));
+    showAt(i);
+  });
+  wrap.addEventListener("pointerleave", hide);
 }
 
 /* ---------------- 이벤트 ---------------- */

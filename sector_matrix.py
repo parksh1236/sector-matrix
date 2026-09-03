@@ -59,6 +59,11 @@ FLOW_TR_ID = "FHPTJ04400000"
 INVESTOR_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-investor"
 INVESTOR_TR_ID = "FHKST01010900"
 
+# 코스피/코스닥 지수 현재가 (장중 실시간)
+INDEX_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-index-price"
+INDEX_TR_ID = "FHPUP02100000"
+INDEX_CODES = (("0001", "KOSPI"), ("1001", "KOSDAQ"))
+
 # 정규장 09:00 ~ 15:30 을 10분 단위로 자른 슬롯 라벨
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
@@ -226,6 +231,53 @@ def fetch_investor_daily(code: str, retries: int = 2) -> list | None:
                     continue   # 당일(장중) 행 — 아직 확정 전이라 건너뜀
                 return [row.get("stck_bsop_date"), trio(row, "frgn"), trio(row, "orgn"), trio(row, "prsn")]
             return None
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def fetch_index(iscd: str, retries: int = 3) -> list | None:
+    """
+    코스피/코스닥 지수 현재가를 조회.
+    주의: 이 API의 acml_tr_pbmn 은 개별종목 시세 API와 같은 필드명이지만 단위가 다르다
+    (여기는 백만원 단위 -> /100 해야 억원, 개별종목 쪽은 원 단위 -> /1e8).
+    반환: [지수, 등락, 등락률%, 시가, 고가, 저가, 거래대금(억), 상승종목수, 보합종목수, 하락종목수]
+    """
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": INDEX_TR_ID,
+        "custtype": "P",
+    }
+    params = {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": iscd}
+
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + INDEX_ENDPOINT, headers=headers,
+                                params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            o = data.get("output") or {}
+            if not o:
+                return None
+            sign = -1 if o.get("prdy_vrss_sign") in ("4", "5") else 1   # 4/5 = 하락
+            return [
+                round(_f(o.get("bstp_nmix_prpr")), 2),
+                round(sign * abs(_f(o.get("bstp_nmix_prdy_vrss"))), 2),
+                round(sign * abs(_f(o.get("bstp_nmix_prdy_ctrt"))), 2),
+                round(_f(o.get("bstp_nmix_oprc")), 2),
+                round(_f(o.get("bstp_nmix_hgpr")), 2),
+                round(_f(o.get("bstp_nmix_lwpr")), 2),
+                round(_f(o.get("acml_tr_pbmn")) / 100, 1),
+                int(_f(o.get("ascn_issu_cnt"))),
+                int(_f(o.get("stnr_issu_cnt"))),
+                int(_f(o.get("down_issu_cnt"))),
+            ]
         except Exception:
             time.sleep(0.5 * (attempt + 1))
     return None
@@ -442,9 +494,10 @@ def save_day(day: dict) -> Path:
     return path
 
 
-def upsert_slot(day: dict, slot: str, snapshot: dict, ranks: list | None = None) -> dict:
+def upsert_slot(day: dict, slot: str, snapshot: dict, ranks: list | None = None,
+                idx: dict | None = None) -> dict:
     """같은 슬롯을 다시 수집하면 덮어쓰고, 새 슬롯이면 시간순으로 끼워 넣는다."""
-    entry = {"t": slot, "d": snapshot, "r": ranks or []}
+    entry = {"t": slot, "d": snapshot, "r": ranks or [], "idx": idx or {}}
     for i, s in enumerate(day["slots"]):
         if s["t"] == slot:
             day["slots"][i] = entry
@@ -516,13 +569,23 @@ def run_once(push: bool = False) -> None:
     if not ranks:
         print("  ⚠ 매수금액 순위 조회 실패 — 이번 슬롯은 순위표 없이 저장")
 
+    idx = {}
+    for iscd, name in INDEX_CODES:
+        v = fetch_index(iscd)
+        if v is not None:
+            idx[name] = v
+        time.sleep(REQ_INTERVAL)
+    if len(idx) < 2:
+        print(f"  ⚠ 지수 조회 일부 실패 ({', '.join(idx) or '전부 실패'})")
+
     day = load_day(date_str)
-    day = upsert_slot(day, slot, snapshot, ranks)
+    day = upsert_slot(day, slot, snapshot, ranks, idx)
     day["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
     save_day(day)
 
     out = build_page(day)
-    print(f"  ✔ {out} 생성 (슬롯 {len(day['slots'])}개 누적, 순위 {len(ranks)}종목)")
+    print(f"  ✔ {out} 생성 (슬롯 {len(day['slots'])}개 누적, 순위 {len(ranks)}종목, "
+          f"지수 {len(idx)}개)")
 
     if push:
         git_push(date_str, slot)
