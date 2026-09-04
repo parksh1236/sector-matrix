@@ -64,6 +64,12 @@ INDEX_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-index-price"
 INDEX_TR_ID = "FHPUP02100000"
 INDEX_CODES = (("0001", "KOSPI"), ("1001", "KOSDAQ"))
 
+# 미국 주가지수 선물 (CME) — 코스피 옆에 같이 보여주기 위한 참고 지표
+FUTURES_ENDPOINT = "/uapi/overseas-futureoption/v1/quotations/inquire-price"
+FUTURES_TR_ID = "HHDFC55010000"
+FUT_PRODUCTS = (("NQ", "나스닥100 선물"), ("ES", "S&P500 선물"), ("YM", "다우 선물"))
+_QUARTER_MONTH_CODE = {3: "H", 6: "M", 9: "U", 12: "Z"}   # 지수선물은 3/6/9/12월 분기물만 있음
+
 # 정규장 09:00 ~ 15:30 을 10분 단위로 자른 슬롯 라벨
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
@@ -78,7 +84,11 @@ REQ_INTERVAL = 0.12  # 초당 약 8건 — KIS 실전 유량제한(초당 20건)
 # ---------------------------------------------------------------- 시세 수집
 
 def fetch_quote(code: str, retries: int = 3) -> dict | None:
-    """종목 하나의 현재가/등락률/거래대금을 조회. 실패하면 None."""
+    """
+    종목 하나의 현재가/등락률/거래대금을 조회. 실패하면 None.
+    시장구분을 UN(통합)으로 조회 — KRX 단독(J)이 아니라 넥스트트레이드(NXT) 체결까지 합친 값.
+    (검증: KRX단독 거래량 + NXT단독 거래량 = UN 거래량, 정확히 일치하는 것 확인함)
+    """
     headers = {
         "content-type": "application/json; charset=utf-8",
         "appkey": KIS_APP_KEY,
@@ -86,7 +96,7 @@ def fetch_quote(code: str, retries: int = 3) -> dict | None:
         "tr_id": PRICE_TR_ID,
         "custtype": "P",
     }
-    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
+    params = {"FID_COND_MRKT_DIV_CODE": "UN", "FID_INPUT_ISCD": code}
 
     for attempt in range(retries):
         try:
@@ -150,6 +160,8 @@ def fetch_program_trade(code: str, retries: int = 2) -> list | None:
     """
     종목 하나의 프로그램매매 잠정치를 조회 (장중에도 실시간으로 채워짐).
     반환: [매도량, 매수량, 순매수량, 매도대금(억), 매수대금(억), 순매수대금(억)]
+    참고: FID_COND_MRKT_DIV_CODE 를 UN(통합)으로 바꿔봐도 J(KRX단독)와 값이 완전히 같음
+    (실측 확인) — 이 API는 넥스트트레이드(NXT)를 반영하지 않는 것으로 보여 J 유지.
     """
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -195,6 +207,7 @@ def fetch_investor_daily(code: str, retries: int = 2) -> list | None:
     (보통 전일)의 행을 찾아서 쓴다 — 프로그램매매처럼 실시간 잠정치가 아니라 "확정치".
     반환: [기준일자, 외국인[매도량,매수량,순매수량,매도대금(억),매수대금(억),순매수대금(억)],
                      기관[같은 구성], 개인[같은 구성]]  (조회 실패/전부 공백이면 None)
+    참고: 이 API도 UN(통합)을 줘봐도 J(KRX단독)와 값이 같음 — NXT 미반영, J 유지.
     """
     headers = {
         "content-type": "application/json; charset=utf-8",
@@ -283,6 +296,83 @@ def fetch_index(iscd: str, retries: int = 3) -> list | None:
     return None
 
 
+def _quarterly_codes(n: int = 2) -> list:
+    """오늘부터 가장 가까운 분기월(3/6/9/12) 선물 만기코드를 [\"U26\", \"Z26\", ...] 형태로 n개 반환."""
+    now = datetime.now(KST)
+    y, m = now.year, now.month
+    codes = []
+    while len(codes) < n:
+        if m in _QUARTER_MONTH_CODE:
+            codes.append(f"{_QUARTER_MONTH_CODE[m]}{y % 100:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return codes
+
+
+def _fetch_futures_contract(srs_cd: str, retries: int = 2) -> dict | None:
+    """선물 계약 코드 하나(예: NQU26)의 시세를 조회. 존재하지 않거나 미거래 계약이면 None."""
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": FUTURES_TR_ID,
+        "custtype": "P",
+    }
+    params = {"srs_cd": srs_cd}
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + FUTURES_ENDPOINT, headers=headers,
+                                params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            o = data.get("output1") or {}
+            if not str(o.get("last_price", "")).strip():   # 존재하지 않는/휴장 계약은 전부 빈 문자열로 옴
+                return None
+            return o
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def fetch_us_futures() -> dict:
+    """
+    나스닥100/S&P500/다우 선물의 현재가를 조회.
+    분기월(3/6/9/12) 계약만 존재하므로, 가까운 두 분기월을 둘 다 조회해서
+    거래량이 더 많은 쪽(=현재 거래되는 최근월물)을 고른다 — 만기 롤오버를 수동으로 관리할 필요 없음.
+    가격 스케일은 상품마다 다름: tick_size 가 소수(0.25 등, NQ·ES)면 실제값의 1000배로 내려오고,
+    정수(1, YM)면 그대로 내려온다 — tick_size 로 스케일을 판정 (하드코딩하지 않고 응답 기준 실측).
+    반환: {"NQ": [현재가, 등락, 등락률%, 거래량, 거래소], "ES": [...], "YM": [...]}
+    """
+    months = _quarterly_codes(2)
+    result: dict = {}
+    for code, _name in FUT_PRODUCTS:
+        candidates = []
+        for mo in months:
+            o = _fetch_futures_contract(f"{code}{mo}")
+            if o:
+                candidates.append(o)
+            time.sleep(REQ_INTERVAL)
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda o: _f(o.get("vol")))
+        scale = 1000 if _f(best.get("tick_size")) < 1 else 1
+        sign = -1 if best.get("prev_diff_flag") in ("4", "5") else 1
+        result[code] = [
+            round(_f(best.get("last_price")) / scale, 2),
+            round(sign * abs(_f(best.get("prev_diff_price"))) / scale, 2),
+            round(sign * abs(_f(best.get("prev_diff_rate"))), 2),
+            int(_f(best.get("vol"))),
+            best.get("exch_cd", ""),
+        ]
+    return result
+
+
 def fetch_investor_flow_rank(retries: int = 2) -> dict:
     """
     외국인/기관 매매종목가집계(장중 잠정 상위 랭킹)를 4가지 정렬로 모아 병합.
@@ -361,7 +451,9 @@ def fetch_top_amount(retries: int = 3) -> list:
         "custtype": "P",
     }
     base_params = {
-        "FID_COND_MRKT_DIV_CODE": "J",     # J = 주식
+        # J = 주식. 이 순위분석 화면은 UN(통합)을 넣으면 "잘못된 조건"으로 에러가 남 —
+        # 즉 거래대금 상위 30 랭킹 자체는 KRX 체결분만 집계됨(넥스트트레이드 미반영, API 제약).
+        "FID_COND_MRKT_DIV_CODE": "J",
         "FID_COND_SCR_DIV_CODE": "20171",  # 순위분석 화면번호(고정값)
         "FID_DIV_CLS_CODE": "0",           # 0 = 전체
         "FID_BLNG_CLS_CODE": "3",          # 3 = 거래금액순 (= 매수금액 상위)
@@ -495,9 +587,9 @@ def save_day(day: dict) -> Path:
 
 
 def upsert_slot(day: dict, slot: str, snapshot: dict, ranks: list | None = None,
-                idx: dict | None = None) -> dict:
+                idx: dict | None = None, fut: dict | None = None) -> dict:
     """같은 슬롯을 다시 수집하면 덮어쓰고, 새 슬롯이면 시간순으로 끼워 넣는다."""
-    entry = {"t": slot, "d": snapshot, "r": ranks or [], "idx": idx or {}}
+    entry = {"t": slot, "d": snapshot, "r": ranks or [], "idx": idx or {}, "fut": fut or {}}
     for i, s in enumerate(day["slots"]):
         if s["t"] == slot:
             day["slots"][i] = entry
@@ -578,14 +670,18 @@ def run_once(push: bool = False) -> None:
     if len(idx) < 2:
         print(f"  ⚠ 지수 조회 일부 실패 ({', '.join(idx) or '전부 실패'})")
 
+    fut = fetch_us_futures()
+    if len(fut) < len(FUT_PRODUCTS):
+        print(f"  ⚠ 미국 선물 일부 실패 ({', '.join(fut) or '전부 실패'})")
+
     day = load_day(date_str)
-    day = upsert_slot(day, slot, snapshot, ranks, idx)
+    day = upsert_slot(day, slot, snapshot, ranks, idx, fut)
     day["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
     save_day(day)
 
     out = build_page(day)
     print(f"  ✔ {out} 생성 (슬롯 {len(day['slots'])}개 누적, 순위 {len(ranks)}종목, "
-          f"지수 {len(idx)}개)")
+          f"지수 {len(idx)}개, 선물 {len(fut)}개)")
 
     if push:
         git_push(date_str, slot)

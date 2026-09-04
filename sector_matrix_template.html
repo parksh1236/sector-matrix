@@ -269,7 +269,8 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
   <div class="toolbar">
     <span class="lbl">기준 시각</span>
     <select id="rankSlot"></select>
-    <span class="lbl" style="margin-left:auto">거래대금(매수금액) 상위 30 · 코스피+코스닥 개별종목 (ETF 제외)</span>
+    <span class="lbl" style="margin-left:auto" title="KIS API 제약상 이 순위표는 KRX 체결분만 집계됨(넥스트트레이드 미반영)">
+      거래대금(매수금액) 상위 30 · 코스피+코스닥 개별종목, KRX 기준 (ETF 제외)</span>
   </div>
   <div class="rank-top" id="rankStats"></div>
   <div class="conc" id="rankConc"></div>
@@ -283,6 +284,7 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
   <span>데이터: 한국투자증권 Open API · 10분 단위 스냅샷</span>
   <span>섹터 등락률 = 구성종목 등락률 단순평균</span>
   <span>주도주 = 해당 시점 섹터 내 등락률 1위</span>
+  <span>종목 시세는 KRX+넥스트트레이드 통합(UN) · 매수금액 TOP30·코스피/코스닥 지수는 KRX 기준(API 제약)</span>
 </footer>
 </div>
 
@@ -514,32 +516,51 @@ function render(){
 /* ---------------- 코스피/코스닥 지수 차트 ---------------- */
 const IDX_LABEL = {KOSPI: "코스피", KOSDAQ: "코스닥"};
 
+const FUT_LABEL = {NQ: "나스닥100 선물", ES: "S&P500 선물", YM: "다우 선물"};
+
 function renderIndices(){
   const el = $("#idxRow");
-  const names = Object.keys(IDX_LABEL);
-  el.innerHTML = names.map(name => idxCardHTML(name)).join("");
-  names.forEach(name => wireIdxChart(name));
+  const items = [
+    ...Object.keys(IDX_LABEL).map(key => ({kind:"idx", key, label:IDX_LABEL[key]})),
+    ...Object.keys(FUT_LABEL).map(key => ({kind:"fut", key, label:FUT_LABEL[key]})),
+  ];
+  el.innerHTML = items.map(it => idxCardHTML(it)).join("");
+  items.forEach(it => wireIdxChart(it));
 }
 
-function idxCardHTML(name){
-  // 이 이름(코스피/코스닥) 데이터가 있는 슬롯만 시계열로 사용 — 옛날 날짜엔 idx 필드가 없을 수 있음
-  const series = DATA.slots
-    .map(s => ({t: s.t, v: s.idx && s.idx[name]}))
+// 지수(코스피/코스닥)든 선물(나스닥100 등)이든 슬롯[kind][key] 형태로 저장돼 있어 같은 방식으로 뽑는다
+function seriesFor(it){
+  return DATA.slots
+    .map(s => ({t: s.t, v: s[it.kind] && s[it.kind][it.key]}))
     .filter(x => x.v);
+}
+
+function idxSubline(it, v){
+  if (it.kind === "idx"){
+    const [, , , , , , amt, up, flat, down] = v;
+    return `거래대금 ${amtText(amt)} · 상승 ${up} · 보합 ${flat} · 하락 ${down}`;
+  }
+  const [, , , vol, exch] = v;
+  return `거래량 ${vol.toLocaleString()}계약 · ${exch} (분기월물, 자동 최근월 선택)`;
+}
+
+function idxCardHTML(it){
+  // 이 항목 데이터가 있는 슬롯만 시계열로 사용 — 옛날 날짜엔 idx/fut 필드가 없을 수 있음
+  const series = seriesFor(it);
   if (!series.length){
-    return `<div class="idx-card"><div class="idx-head"><span class="idx-name">${IDX_LABEL[name]}</span></div>
-      <div class="idx-empty">아직 수집된 지수 데이터가 없습니다</div></div>`;
+    return `<div class="idx-card"><div class="idx-head"><span class="idx-name">${it.label}</span></div>
+      <div class="idx-empty">아직 수집된 데이터가 없습니다</div></div>`;
   }
   const last = series[series.length - 1].v;
-  const [val, chg, chgPct, , , , amt, up, flat, down] = last;
+  const [val, chg, chgPct] = last;
   const dir = chg > 0 ? "up" : chg < 0 ? "down" : "flat";
-  return `<div class="idx-card" data-idx="${name}">
+  return `<div class="idx-card" data-kind="${it.kind}" data-key="${it.key}">
     <div class="idx-head">
-      <span class="idx-name">${IDX_LABEL[name]}</span>
+      <span class="idx-name">${it.label}</span>
       <span class="idx-val">${val.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       <span class="idx-chg ${dir}">${sign(chg)} (${sign(chgPct)}%)</span>
     </div>
-    <div class="idx-sub">거래대금 ${amtText(amt)} · 상승 ${up} · 보합 ${flat} · 하락 ${down}</div>
+    <div class="idx-sub">${idxSubline(it, last)}</div>
     <div class="idx-chartwrap">
       <svg class="idx-chart" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
       <div class="idx-crosshair"></div>
@@ -548,12 +569,10 @@ function idxCardHTML(name){
   </div>`;
 }
 
-function wireIdxChart(name){
-  const card = document.querySelector(`.idx-card[data-idx="${name}"]`);
+function wireIdxChart(it){
+  const card = document.querySelector(`.idx-card[data-kind="${it.kind}"][data-key="${it.key}"]`);
   if (!card) return;
-  const series = DATA.slots
-    .map(s => ({t: s.t, v: s.idx && s.idx[name]}))
-    .filter(x => x.v);
+  const series = seriesFor(it);
   if (series.length < 2) return;   // 점 하나로는 선을 그릴 수 없음
 
   const svg = card.querySelector(".idx-chart");
