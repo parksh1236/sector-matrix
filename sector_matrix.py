@@ -70,6 +70,12 @@ FUTURES_TR_ID = "HHDFC55010000"
 FUT_PRODUCTS = (("NQ", "나스닥100 선물"), ("ES", "S&P500 선물"), ("YM", "다우 선물"))
 _QUARTER_MONTH_CODE = {3: "H", 6: "M", 9: "U", 12: "Z"}   # 지수선물은 3/6/9/12월 분기물만 있음
 
+# 종목 캔들차트(일/주/월봉 + 분봉) — 매수금액 TOP30 종목에 한해서만 수집(API 부하 고려)
+OHLC_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+OHLC_TR_ID = "FHKST03010100"
+MINUTE_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+MINUTE_TR_ID = "FHKST03010200"
+
 # 정규장 09:00 ~ 15:30 을 10분 단위로 자른 슬롯 라벨
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
@@ -373,6 +379,139 @@ def fetch_us_futures() -> dict:
     return result
 
 
+def fetch_ohlc_history(code: str, period: str, retries: int = 2) -> list:
+    """
+    종목 하나의 일/주/월봉을 조회. period: 'D'(일봉) / 'W'(주봉) / 'M'(월봉).
+    반환: [[날짜(YYYYMMDD), 시가, 고가, 저가, 종가, 거래량, 거래대금(억)], ...] 오래된 순.
+    """
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": OHLC_TR_ID,
+        "custtype": "P",
+    }
+    now = datetime.now(KST)
+    start = (now - timedelta(days=730)).strftime("%Y%m%d")   # 월봉까지 충분히 나오도록 2년치 요청
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+        "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": now.strftime("%Y%m%d"),
+        "FID_PERIOD_DIV_CODE": period, "FID_ORG_ADJ_PRC": "0",
+    }
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + OHLC_ENDPOINT, headers=headers,
+                                params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            rows = []
+            for o in data.get("output2", []):
+                date = o.get("stck_bsop_date", "")
+                if not date:
+                    continue
+                rows.append([
+                    date,
+                    int(_f(o.get("stck_oprc"))),
+                    int(_f(o.get("stck_hgpr"))),
+                    int(_f(o.get("stck_lwpr"))),
+                    int(_f(o.get("stck_clpr"))),
+                    int(_f(o.get("acml_vol"))),
+                    round(_f(o.get("acml_tr_pbmn")) / 1e8, 1),
+                ])
+            rows.sort(key=lambda r: r[0])   # API가 최신순으로 주므로 오래된 순으로 뒤집음
+            return rows[-120:]              # 일봉 기준 최근 120개면 화면에 충분
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return []
+
+
+def fetch_minute_bars(code: str, retries: int = 2) -> list:
+    """
+    최근 1분봉 ~30개를 조회 (당일 것만 제공되는 API). 5분봉으로 묶는 건 호출한 쪽에서 처리.
+    반환: [[HHMM, 시가, 고가, 저가, 종가, 체결량, 누적거래대금(억)], ...] 오래된 순.
+    """
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": MINUTE_TR_ID,
+        "custtype": "P",
+    }
+    now = datetime.now(KST)
+    params = {
+        "FID_ETC_CLS_CODE": "", "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+        "FID_INPUT_HOUR_1": now.strftime("%H%M%S"),
+        "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": "",
+    }
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + MINUTE_ENDPOINT, headers=headers,
+                                params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            rows = []
+            for o in data.get("output2", []):
+                hhmm = o.get("stck_cntg_hour", "")[:4]
+                if not hhmm:
+                    continue
+                rows.append([
+                    hhmm,
+                    int(_f(o.get("stck_oprc"))),
+                    int(_f(o.get("stck_hgpr"))),
+                    int(_f(o.get("stck_lwpr"))),
+                    int(_f(o.get("stck_prpr"))),
+                    int(_f(o.get("cntg_vol"))),
+                    round(_f(o.get("acml_tr_pbmn")) / 1e8, 1),
+                ])
+            rows.sort(key=lambda r: r[0])
+            return rows
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return []
+
+
+def resample_minutes(bars_1m: list, n: int) -> list:
+    """1분봉 리스트를 n분봉으로 묶는다(n=1이면 그대로). 거래대금은 (종가×체결량) 합산으로 근사."""
+    if n == 1:
+        return [[hhmm, o, h, l, c, vol, round(c * vol / 1e8, 1)]
+                for hhmm, o, h, l, c, vol, _ in bars_1m]
+    buckets: dict = {}
+    for hhmm, o, h, l, c, vol, _acml_amt in bars_1m:
+        hb = f"{hhmm[:2]}{(int(hhmm[2:]) // n) * n:02d}"   # n분 경계로 내림
+        b = buckets.setdefault(hb, {"o": o, "h": h, "l": l, "c": c, "vol": 0, "amt": 0.0})
+        b["h"] = max(b["h"], h)
+        b["l"] = min(b["l"], l)
+        b["c"] = c
+        b["vol"] += vol
+        b["amt"] += c * vol / 1e8
+    return [[t, b["o"], b["h"], b["l"], b["c"], b["vol"], round(b["amt"], 1)]
+            for t, b in sorted(buckets.items())]
+
+
+MINUTE_BUCKETS = (("m1", 1), ("m3", 3), ("m5", 5), ("m15", 15))
+
+
+def fetch_candles(code: str) -> dict:
+    """종목 하나의 일/주/월봉 + 당일 1/3/5/15분봉을 한 번에 모아 반환."""
+    out = {}
+    for period, key in (("D", "D"), ("W", "W"), ("M", "M")):
+        out[key] = fetch_ohlc_history(code, period)
+        time.sleep(REQ_INTERVAL)
+    bars_1m = fetch_minute_bars(code)
+    for key, n in MINUTE_BUCKETS:
+        out[key] = resample_minutes(bars_1m, n)
+    time.sleep(REQ_INTERVAL)
+    return out
+
+
 def fetch_investor_flow_rank(retries: int = 2) -> dict:
     """
     외국인/기관 매매종목가집계(장중 잠정 상위 랭킹)를 4가지 정렬로 모아 병합.
@@ -574,8 +713,28 @@ def load_day(date_str: str) -> dict:
     """그날 파일이 있으면 읽고, 없으면 빈 구조를 만든다."""
     path = DATA / f"{date_str}.json"
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {"date": date_str, "updated_at": None, "slots": []}
+        day = json.loads(path.read_text(encoding="utf-8"))
+        day.setdefault("candles", {})
+        return day
+    return {"date": date_str, "updated_at": None, "slots": [], "candles": {}}
+
+
+def merge_candles(day: dict, code: str, fresh: dict) -> None:
+    """
+    종목 하나의 캔들을 day['candles'][code] 에 병합.
+    일/주/월봉은 매번 다시 받아온 것으로 덮어쓰고(과거분 포함 전체 재조회라 그게 맞음),
+    분봉(1/3/5/15분)은 당일 누적이라 시간(HHMM) 기준으로 기존 것과 합쳐 중복 없이 이어붙인다.
+    """
+    default = {"D": [], "W": [], "M": [], **{k: [] for k, _ in MINUTE_BUCKETS}}
+    cur = day["candles"].setdefault(code, dict(default))
+    for k in default:
+        cur.setdefault(k, [])   # 옛날에 저장된 종목이면 새로 추가된 분봉 키가 없을 수 있음
+    cur["D"], cur["W"], cur["M"] = fresh["D"], fresh["W"], fresh["M"]
+    for key, _n in MINUTE_BUCKETS:
+        merged = {b[0]: b for b in cur.get(key, [])}
+        for b in fresh[key]:
+            merged[b[0]] = b
+        cur[key] = [merged[t] for t in sorted(merged)]
 
 
 def save_day(day: dict) -> Path:
@@ -611,6 +770,7 @@ def build_page(day: dict) -> Path:
         "updated_at": day["updated_at"],
         "slot_labels": SLOT_LABELS,
         "slots": day["slots"],
+        "candles": day.get("candles", {}),
         "available_dates": sorted(p.stem for p in DATA.glob("*.json")),
     }
     template = (ROOT / "sector_matrix_template.html").read_text(encoding="utf-8")
@@ -676,12 +836,20 @@ def run_once(push: bool = False) -> None:
 
     day = load_day(date_str)
     day = upsert_slot(day, slot, snapshot, ranks, idx, fut)
+
+    print(f"  캔들(1/3/5/15분·일·주·월봉) {len(ranks)}종목 수집 중…", flush=True)
+    for r in ranks:
+        try:
+            merge_candles(day, r[0], fetch_candles(r[0]))
+        except Exception as e:
+            print(f"  ⚠ {r[1]}({r[0]}) 캔들 수집 실패: {e}")
+
     day["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
     save_day(day)
 
     out = build_page(day)
     print(f"  ✔ {out} 생성 (슬롯 {len(day['slots'])}개 누적, 순위 {len(ranks)}종목, "
-          f"지수 {len(idx)}개, 선물 {len(fut)}개)")
+          f"지수 {len(idx)}개, 선물 {len(fut)}개, 캔들 {len(day['candles'])}종목)")
 
     if push:
         git_push(date_str, slot)

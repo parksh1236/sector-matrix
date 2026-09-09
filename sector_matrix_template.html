@@ -68,6 +68,28 @@ button.tog[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 .idx-tip .v{font-weight:700;font-size:12.5px}
 .idx-empty{color:var(--ink-faint);font-size:12.5px;padding:20px 0;text-align:center}
 
+/* ---------- 캔들차트(일/주/월/5분봉) + 거래대금 바 ---------- */
+.candle-toolbar{display:flex;align-items:center;gap:6px;margin:10px 0 8px}
+.candle-toolbar button{background:var(--panel-2);color:var(--ink-dim);border:1px solid var(--line);
+  border-radius:6px;padding:4px 11px;font-size:12px;font-weight:650;cursor:pointer;font-family:var(--sans)}
+.candle-toolbar button[aria-pressed="true"]{background:#232b3a;color:#fff;
+  box-shadow:0 0 0 1px rgba(255,176,32,.35) inset}
+.candle-wrap{position:relative}
+.candle-chart{display:block;width:100%;height:206px;overflow:visible}
+.candle-chart .gridline{stroke:var(--line);stroke-width:1}
+.candle-chart .axis-label{fill:var(--ink-faint);font-family:var(--mono);font-size:9px}
+.candle-chart .wick{stroke-width:1}
+.candle-chart .body{stroke:none}
+.candle-chart .hit{fill:transparent}
+.candle-crosshair-v{position:absolute;top:0;bottom:0;width:1px;background:var(--line);
+  pointer-events:none;opacity:0;transition:opacity .1s}
+.candle-tip{position:absolute;top:-2px;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:7px 10px;
+  font-family:var(--mono);font-size:11px;white-space:nowrap;z-index:5;box-shadow:0 4px 14px rgba(0,0,0,.35);
+  line-height:1.6}
+.candle-tip .ct{color:var(--ink-faint);margin-bottom:2px}
+.candle-tip b{margin-left:4px}
+
 .leaders{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:20px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
   position:relative;overflow:hidden}
@@ -884,19 +906,22 @@ function renderRankDetail(rowsAll){
 
   const progTrio = progQty === null ? null : [progSellQty, progBuyQty, progQty, progSellAmt, progBuyAmt, progAmt];
 
-  const chartSeries = stockSeries(code);
+  const candleSet = (PAYLOAD.candles || {})[code];
+  const hasCandles = candleSet && CANDLE_PERIODS.some(p => (candleSet[p.key]||[]).length >= 2);
+  const chartSeries = hasCandles ? null : stockSeries(code);
 
   el.innerHTML = `
     <h2>${name} <span style="font-size:12px;color:var(--ink-faint);font-family:var(--mono)">${code}</span>
       ${cap!=null ? `<span style="font-size:12px;color:var(--ink-dim);font-family:var(--mono);margin-left:6px">
         · 시총 ${amtText(cap)}</span>` : ""}</h2>
-    ${chartSeries.length >= 2
+    ${hasCandles ? candleChartHTML() :
+      (chartSeries.length >= 2
       ? `<div class="idx-chartwrap" id="stockChartWrap" style="margin:8px 0 18px">
            <svg class="idx-chart" id="stockChartSvg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
            <div class="idx-crosshair" id="stockChartCross"></div>
            <div class="idx-tip" id="stockChartTip"></div>
          </div>`
-      : `<div class="idx-empty" style="margin:8px 0 18px">오늘 하루치 가격 데이터가 아직 부족해 차트를 그릴 수 없습니다</div>`}
+      : `<div class="idx-empty" style="margin:8px 0 18px">오늘 하루치 가격 데이터가 아직 부족해 차트를 그릴 수 없습니다</div>`)}
     <div class="dsub">오늘 장중 잠정치 — 외국인·기관은 KIS API 특성상 매수/매도 개별 조회가 안 되어 순매수만 제공됩니다</div>
     <table class="dtable dtable-flow">
       <thead><tr><th style="text-align:left">구분</th><th>매도</th><th>매수</th><th>순매수</th></tr></thead>
@@ -919,7 +944,8 @@ function renderRankDetail(rowsAll){
       </tbody>
     </table>` : `<div class="empty-note" style="margin-top:12px">전일 확정치를 조회하지 못했습니다.</div>`}`;
 
-  if (chartSeries.length >= 2) wireStockChart(chartSeries);
+  if (hasCandles) wireCandleChart(candleSet);
+  else if (chartSeries.length >= 2) wireStockChart(chartSeries);
 }
 
 // 이 종목의 오늘 하루 가격 시계열 — 1차로 섹터 유니버스 스냅샷(항상 10분마다 다 있음)에서 찾고,
@@ -984,6 +1010,130 @@ function wireStockChart(series){
     showAt(i);
   });
   wrap.addEventListener("pointerleave", hide);
+}
+
+/* ---------------- 캔들차트(일/주/월/5분봉) + 거래대금 바 ---------------- */
+const CANDLE_PERIODS = [
+  {key:"m1", label:"1분봉"}, {key:"m3", label:"3분봉"}, {key:"m5", label:"5분봉"}, {key:"m15", label:"15분봉"},
+  {key:"D", label:"일봉"}, {key:"W", label:"주봉"}, {key:"M", label:"월봉"},
+];
+let candlePeriod = "D";
+
+function candleLabel(period, t){
+  if (period.startsWith("m")) return `${t.slice(0,2)}:${t.slice(2)}`;   // 분봉(m1/m3/m5/m15) -> HH:MM
+  return `${t.slice(4,6)}/${t.slice(6)}`;   // 일/주/월봉 -> MM/DD (연도까지 필요할 만큼 기간이 길진 않음)
+}
+
+function candleChartHTML(){
+  return `
+    <div class="candle-toolbar" id="candleToolbar">
+      ${CANDLE_PERIODS.map(p => `<button data-period="${p.key}" aria-pressed="${p.key===candlePeriod}">${p.label}</button>`).join("")}
+    </div>
+    <div class="candle-wrap" id="candleWrap">
+      <svg class="candle-chart" id="candleSvg" viewBox="0 0 600 190" preserveAspectRatio="none"></svg>
+      <div class="candle-crosshair-v" id="candleCross"></div>
+      <div class="candle-tip" id="candleTip"></div>
+    </div>`;
+}
+
+function wireCandleChart(candleSet){
+  const toolbar = $("#candleToolbar");
+  toolbar.querySelectorAll("button").forEach(b => {
+    b.addEventListener("click", () => {
+      candlePeriod = b.dataset.period;
+      toolbar.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x===b)));
+      drawCandles(candleSet);
+    });
+  });
+  drawCandles(candleSet);
+}
+
+function drawCandles(candleSet){
+  const svg = $("#candleSvg"), wrap = $("#candleWrap");
+  const crosshair = $("#candleCross"), tip = $("#candleTip");
+  const bars = (candleSet[candlePeriod] || []).slice(-90);   // 화면 폭 대비 너무 촘촘해지지 않도록 최근 90개까지만
+
+  if (bars.length < 2){
+    svg.innerHTML = "";
+    crosshair.style.opacity = "0"; tip.style.opacity = "0";
+    svg.insertAdjacentHTML("afterend",
+      `<div class="idx-empty" id="candleEmptyNote">이 기간 데이터가 아직 부족합니다</div>`);
+    return;
+  }
+  document.getElementById("candleEmptyNote")?.remove();
+
+  const W = 600, H_C = 140, GAP = 4, H_V = 40, H = H_C + GAP + H_V;
+  const n = bars.length;
+  const bw = Math.max(1.5, (W / n) * 0.62);
+
+  const highs = bars.map(b => b[2]), lows = bars.map(b => b[3]);
+  const lo = Math.min(...lows), hi = Math.max(...highs);
+  const span = (hi - lo) || 1;
+  const cx = i => ((i + 0.5) / n) * W;
+  const cy = p => H_C - ((p - lo) / span) * H_C;
+  const maxAmt = Math.max(...bars.map(b => b[6]), 1);
+  const vy = amt => H_C + GAP + H_V - (amt / maxAmt) * H_V;
+
+  let marks = "";
+  bars.forEach((b, i) => {
+    const [, o, h, l, c, , amt] = b;
+    const up = c >= o;
+    const color = `var(--${up ? "up" : "down"})`;
+    const x = cx(i);
+    const bodyTop = cy(Math.max(o, c)), bodyBot = cy(Math.min(o, c));
+    const bodyH = Math.max(1, bodyBot - bodyTop);
+    marks += `<line class="wick" x1="${x.toFixed(2)}" y1="${cy(h).toFixed(2)}" x2="${x.toFixed(2)}" y2="${cy(l).toFixed(2)}" stroke="${color}"></line>`;
+    marks += `<rect class="body" x="${(x-bw/2).toFixed(2)}" y="${bodyTop.toFixed(2)}" width="${bw.toFixed(2)}" height="${bodyH.toFixed(2)}" fill="${color}"></rect>`;
+    marks += `<rect x="${(x-bw/2).toFixed(2)}" y="${vy(amt).toFixed(2)}" width="${bw.toFixed(2)}" height="${(H_C+GAP+H_V-vy(amt)).toFixed(2)}" fill="${color}" opacity="0.45"></rect>`;
+  });
+
+  // x축 라벨은 6개 정도만 골라서(전부 찍으면 겹침)
+  const labelIdx = new Set();
+  const step = Math.max(1, Math.floor(n / 6));
+  for (let i = 0; i < n; i += step) labelIdx.add(i);
+  labelIdx.add(n - 1);
+  let labels = "";
+  labelIdx.forEach(i => {
+    labels += `<text class="axis-label" x="${cx(i).toFixed(1)}" y="${H+11}" text-anchor="middle">${candleLabel(candlePeriod, bars[i][0])}</text>`;
+  });
+
+  const bandW = W / n;
+  const hitBands = bars.map((b,i) =>
+    `<rect class="hit" x="${(i*bandW).toFixed(2)}" y="0" width="${bandW.toFixed(2)}" height="${H}"></rect>`
+  ).join("");
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H+16}`);
+  svg.innerHTML = `
+    <line class="gridline" x1="0" y1="${H_C}" x2="${W}" y2="${H_C}"></line>
+    <line class="gridline" x1="0" y1="${(H_C+GAP+H_V).toFixed(1)}" x2="${W}" y2="${(H_C+GAP+H_V).toFixed(1)}"></line>
+    ${marks}
+    ${labels}
+    ${hitBands}`;
+
+  function showAt(i){
+    const [t, o, h, l, c, vol, amt] = bars[i];
+    const up = c >= o;
+    const dirCls = up ? "up" : "down";
+    const px = (cx(i) / W) * 100;
+    crosshair.style.left = px + "%";
+    crosshair.style.opacity = "1";
+    tip.style.opacity = "1";
+    tip.style.left = `clamp(0%, ${px}%, calc(100% - 130px))`;
+    tip.innerHTML = `
+      <div class="ct">${candleLabel(candlePeriod, t)}</div>
+      <div>시가<b>${o.toLocaleString()}</b> 고가<b>${h.toLocaleString()}</b></div>
+      <div>저가<b>${l.toLocaleString()}</b> 종가<b class="${dirCls}">${c.toLocaleString()}</b></div>
+      <div>거래대금<b>${amtText(amt)}</b></div>`;
+  }
+  function hide(){ crosshair.style.opacity = "0"; tip.style.opacity = "0"; }
+
+  wrap.onpointermove = e => {
+    const rect = svg.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const i = Math.min(n-1, Math.max(0, Math.floor(relX * n)));
+    showAt(i);
+  };
+  wrap.onpointerleave = hide;
 }
 
 function setView(v){
