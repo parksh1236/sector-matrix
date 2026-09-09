@@ -74,6 +74,18 @@ button.tog[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
   border-radius:6px;padding:4px 10px;font-size:11.5px;cursor:pointer;font-family:var(--sans)}
 .candle-zoomreset:hover{color:var(--ink-dim);border-color:var(--ink-faint)}
 .candle-hint{margin-left:auto;font-size:11px;color:var(--ink-faint)}
+.candle-zoombtns{display:flex;gap:3px}
+.candle-zoombtn{background:var(--panel-2);color:var(--ink-dim);border:1px solid var(--line);
+  border-radius:6px;width:26px;height:26px;font-size:15px;font-weight:700;cursor:pointer;
+  font-family:var(--sans);line-height:1;display:flex;align-items:center;justify-content:center}
+.candle-zoombtn:hover{color:#fff;border-color:var(--ink-faint)}
+.candle-zoombtn:active{background:#232b3a}
+.candle-scrollbar{position:relative;height:12px;margin-top:4px;background:var(--panel-2);
+  border-radius:6px;cursor:pointer}
+.candle-scrollthumb{position:absolute;top:0;height:100%;min-width:16px;background:var(--line);
+  border-radius:6px;cursor:grab}
+.candle-scrollthumb:hover{background:var(--ink-faint)}
+.candle-scrollthumb:active{cursor:grabbing;background:var(--ink-faint)}
 .candle-toolbar button{background:var(--panel-2);color:var(--ink-dim);border:1px solid var(--line);
   border-radius:6px;padding:4px 11px;font-size:12px;font-weight:650;cursor:pointer;font-family:var(--sans)}
 .candle-toolbar button[aria-pressed="true"]{background:#232b3a;color:#fff;
@@ -1033,13 +1045,20 @@ function candleChartHTML(){
   return `
     <div class="candle-toolbar" id="candleToolbar">
       ${CANDLE_PERIODS.map(p => `<button data-period="${p.key}" aria-pressed="${p.key===candlePeriod}">${p.label}</button>`).join("")}
+      <span class="candle-zoombtns">
+        <button id="candleZoomOut" class="candle-zoombtn" title="축소">−</button>
+        <button id="candleZoomIn" class="candle-zoombtn" title="확대">+</button>
+      </span>
       <button id="candleZoomReset" class="candle-zoomreset" title="전체 기간 보기">전체보기</button>
-      <span class="candle-hint">스크롤로 확대·축소 · 드래그로 좌우 이동</span>
+      <span class="candle-hint">휠·+/− 로 확대축소 · 드래그·스크롤바로 이동</span>
     </div>
     <div class="candle-wrap" id="candleWrap">
       <svg class="candle-chart" id="candleSvg" viewBox="0 0 600 190" preserveAspectRatio="none"></svg>
       <div class="candle-crosshair-v" id="candleCross"></div>
       <div class="candle-tip" id="candleTip"></div>
+    </div>
+    <div class="candle-scrollbar" id="candleScrollbar">
+      <div class="candle-scrollthumb" id="candleScrollThumb"></div>
     </div>`;
 }
 
@@ -1061,6 +1080,19 @@ function wireCandleChart(candleSet){
     candleZoom = null; candleOffset = 0;
     drawCandles(candleSet);
   });
+
+  // +/- 버튼 — 화면 중앙을 기준점으로 유지하며 확대/축소 (휠과 같은 계산, 중심만 화면 가운데로 고정)
+  function zoomByButton(factor){
+    const total = (candleSet[candlePeriod] || []).length;
+    const anchorBar = candleOffset + candleZoom / 2;
+    const newZoom = Math.max(10, Math.min(Math.round(candleZoom * factor), total));
+    candleOffset = Math.round(anchorBar - newZoom / 2);
+    candleZoom = newZoom;
+    drawCandles(candleSet);
+  }
+  $("#candleZoomIn").addEventListener("click", () => zoomByButton(1 / 1.4));
+  $("#candleZoomOut").addEventListener("click", () => zoomByButton(1.4));
+
   drawCandles(candleSet);
 }
 
@@ -1168,7 +1200,7 @@ function drawCandles(candleSet){
     dragging = true;
     dragStartX = e.clientX;
     dragStartOffset = candleOffset;
-    wrap.setPointerCapture(e.pointerId);
+    try { wrap.setPointerCapture(e.pointerId); } catch {}
     hide();
   };
   wrap.onpointermove = e => {
@@ -1188,6 +1220,39 @@ function drawCandles(candleSet){
   };
   wrap.onpointerup = () => { dragging = false; };
   wrap.onpointerleave = () => { dragging = false; hide(); };
+
+  // ── 하단 스크롤바: thumb 크기·위치를 지금 보이는 구간에 맞춰 갱신하고, 드래그/트랙클릭으로 이동
+  const track = $("#candleScrollbar"), thumb = $("#candleScrollThumb");
+  const thumbPct = Math.max(4, (candleZoom / allBars.length) * 100);
+  const maxOffset = Math.max(1, allBars.length - candleZoom);
+  const leftPct = (candleOffset / maxOffset) * (100 - thumbPct);
+  thumb.style.width = thumbPct.toFixed(2) + "%";
+  thumb.style.left = (allBars.length <= candleZoom ? 0 : leftPct).toFixed(2) + "%";
+
+  let thumbDragStartX = null, thumbDragStartOffset = 0;
+  thumb.onpointerdown = e => {
+    thumbDragStartX = e.clientX;
+    thumbDragStartOffset = candleOffset;
+    try { thumb.setPointerCapture(e.pointerId); } catch {}
+    e.stopPropagation();
+  };
+  thumb.onpointermove = e => {
+    if (thumbDragStartX === null) return;
+    const rect = track.getBoundingClientRect();
+    const deltaBars = Math.round(((e.clientX - thumbDragStartX) / rect.width) * allBars.length);
+    const next = Math.max(0, Math.min(thumbDragStartOffset + deltaBars, allBars.length - candleZoom));
+    if (next !== candleOffset){ candleOffset = next; drawCandles(candleSet); }
+  };
+  thumb.onpointerup = () => { thumbDragStartX = null; };
+
+  track.onpointerdown = e => {
+    if (e.target === thumb) return;
+    const rect = track.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const centerBar = relX * allBars.length;
+    candleOffset = Math.max(0, Math.min(Math.round(centerBar - candleZoom / 2), allBars.length - candleZoom));
+    drawCandles(candleSet);
+  };
 }
 
 function setView(v){
