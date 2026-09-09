@@ -884,10 +884,19 @@ function renderRankDetail(rowsAll){
 
   const progTrio = progQty === null ? null : [progSellQty, progBuyQty, progQty, progSellAmt, progBuyAmt, progAmt];
 
+  const chartSeries = stockSeries(code);
+
   el.innerHTML = `
     <h2>${name} <span style="font-size:12px;color:var(--ink-faint);font-family:var(--mono)">${code}</span>
       ${cap!=null ? `<span style="font-size:12px;color:var(--ink-dim);font-family:var(--mono);margin-left:6px">
         · 시총 ${amtText(cap)}</span>` : ""}</h2>
+    ${chartSeries.length >= 2
+      ? `<div class="idx-chartwrap" id="stockChartWrap" style="margin:8px 0 18px">
+           <svg class="idx-chart" id="stockChartSvg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
+           <div class="idx-crosshair" id="stockChartCross"></div>
+           <div class="idx-tip" id="stockChartTip"></div>
+         </div>`
+      : `<div class="idx-empty" style="margin:8px 0 18px">오늘 하루치 가격 데이터가 아직 부족해 차트를 그릴 수 없습니다</div>`}
     <div class="dsub">오늘 장중 잠정치 — 외국인·기관은 KIS API 특성상 매수/매도 개별 조회가 안 되어 순매수만 제공됩니다</div>
     <table class="dtable dtable-flow">
       <thead><tr><th style="text-align:left">구분</th><th>매도</th><th>매수</th><th>순매수</th></tr></thead>
@@ -909,6 +918,72 @@ function renderRankDetail(rowsAll){
         ${trioRow("개인", daily[3])}
       </tbody>
     </table>` : `<div class="empty-note" style="margin-top:12px">전일 확정치를 조회하지 못했습니다.</div>`}`;
+
+  if (chartSeries.length >= 2) wireStockChart(chartSeries);
+}
+
+// 이 종목의 오늘 하루 가격 시계열 — 1차로 섹터 유니버스 스냅샷(항상 10분마다 다 있음)에서 찾고,
+// 유니버스 밖 종목(TOP30에만 잠깐 나타난 경우)이면 그 시점의 순위표 기록에서 듬성듬성 모은다
+function stockSeries(code){
+  let series = DATA.slots
+    .map(s => { const d = s.d && s.d[code]; return d ? {t:s.t, price:d[1], chgPct:d[0]} : null; })
+    .filter(Boolean);
+  if (series.length >= 2) return series;
+  return DATA.slots
+    .map(s => { const row = (s.r||[]).find(r => r[0] === code); return row ? {t:s.t, price:row[2], chgPct:row[3]} : null; })
+    .filter(Boolean);
+}
+
+function wireStockChart(series){
+  const svg = $("#stockChartSvg"), wrap = $("#stockChartWrap");
+  const crosshair = $("#stockChartCross"), tip = $("#stockChartTip");
+  if (!svg || !wrap) return;
+
+  const W = 600, H = 96, PAD = 6;
+  const prices = series.map(s => s.price);
+  const lo = Math.min(...prices), hi = Math.max(...prices);
+  const span = (hi - lo) || 1;
+  const x = i => (i / (series.length - 1)) * W;
+  const y = p => H - PAD - ((p - lo) / span) * (H - PAD*2);
+
+  const dir = series[series.length-1].chgPct > 0 ? "up" : series[series.length-1].chgPct < 0 ? "down" : "flat";
+  const color = `var(--${dir === "flat" ? "ink-faint" : dir})`;
+
+  const linePts = series.map((s,i) => `${x(i).toFixed(2)},${y(s.price).toFixed(2)}`).join(" ");
+  const areaPts = `0,${H} ${linePts} ${W},${H}`;
+  const lastX = x(series.length-1), lastY = y(series[series.length-1].price);
+  const bandW = W / series.length;
+  const hitBands = series.map((s,i) =>
+    `<rect class="hit" x="${(i*bandW).toFixed(2)}" y="0" width="${bandW.toFixed(2)}" height="${H}"></rect>`
+  ).join("");
+
+  svg.innerHTML = `
+    <line class="gridline" x1="0" y1="${y(lo).toFixed(1)}" x2="${W}" y2="${y(lo).toFixed(1)}"></line>
+    <polygon class="area" points="${areaPts}" fill="${color}"></polygon>
+    <polyline class="line" points="${linePts}" stroke="${color}"></polyline>
+    <circle class="dot" cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="4" fill="${color}"></circle>
+    ${hitBands}`;
+
+  function showAt(i){
+    const s = series[i];
+    const dirI = s.chgPct > 0 ? "up" : s.chgPct < 0 ? "down" : "flat";
+    const px = (x(i) / W) * 100;
+    crosshair.style.left = px + "%";
+    crosshair.style.opacity = "1";
+    tip.style.opacity = "1";
+    tip.style.left = `clamp(0%, ${px}%, calc(100% - 90px))`;
+    tip.innerHTML = `<div class="t">${hhmm(s.t)}</div>
+      <div class="v">${s.price.toLocaleString()} <span class="${dirI}">${sign(s.chgPct)}%</span></div>`;
+  }
+  function hide(){ crosshair.style.opacity = "0"; tip.style.opacity = "0"; }
+
+  wrap.addEventListener("pointermove", e => {
+    const rect = svg.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const i = Math.min(series.length-1, Math.max(0, Math.floor(relX * series.length)));
+    showAt(i);
+  });
+  wrap.addEventListener("pointerleave", hide);
 }
 
 function setView(v){
