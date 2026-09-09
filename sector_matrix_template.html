@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>주도섹터 · 주도주 10분 매트릭스</title>
+<title>주도섹터 · 주도주 5분 매트릭스</title>
 <style>
 :root{
   --bg:#0a0c10; --panel:#11141b; --panel-2:#161a23; --line:#232936;
@@ -69,12 +69,17 @@ button.tog[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 .idx-empty{color:var(--ink-faint);font-size:12.5px;padding:20px 0;text-align:center}
 
 /* ---------- 캔들차트(일/주/월/5분봉) + 거래대금 바 ---------- */
-.candle-toolbar{display:flex;align-items:center;gap:6px;margin:10px 0 8px}
+.candle-toolbar{display:flex;align-items:center;gap:6px;margin:10px 0 8px;flex-wrap:wrap}
+.candle-zoomreset{background:transparent;color:var(--ink-faint);border:1px solid var(--line);
+  border-radius:6px;padding:4px 10px;font-size:11.5px;cursor:pointer;font-family:var(--sans)}
+.candle-zoomreset:hover{color:var(--ink-dim);border-color:var(--ink-faint)}
+.candle-hint{margin-left:auto;font-size:11px;color:var(--ink-faint)}
 .candle-toolbar button{background:var(--panel-2);color:var(--ink-dim);border:1px solid var(--line);
   border-radius:6px;padding:4px 11px;font-size:12px;font-weight:650;cursor:pointer;font-family:var(--sans)}
 .candle-toolbar button[aria-pressed="true"]{background:#232b3a;color:#fff;
   box-shadow:0 0 0 1px rgba(255,176,32,.35) inset}
-.candle-wrap{position:relative}
+.candle-wrap{position:relative;cursor:grab;touch-action:none}
+.candle-wrap:active{cursor:grabbing}
 .candle-chart{display:block;width:100%;height:206px;overflow:visible}
 .candle-chart .gridline{stroke:var(--line);stroke-width:1}
 .candle-chart .axis-label{fill:var(--ink-faint);font-family:var(--mono);font-size:9px}
@@ -266,7 +271,7 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
 <div class="toolbar">
   <span class="lbl">정렬</span>
   <button class="tog" data-sort="chg" aria-pressed="true">현재 강도</button>
-  <button class="tog" data-sort="mom" aria-pressed="false">최근 10분 모멘텀</button>
+  <button class="tog" data-sort="mom" aria-pressed="false">최근 5분 모멘텀</button>
   <button class="tog" data-sort="amt" aria-pressed="false">거래대금</button>
   <span class="lbl" style="margin-left:8px">|</span>
   <button class="tog" id="expandAll" aria-pressed="false">전 섹터 종목 펼치기</button>
@@ -303,7 +308,7 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
 </div>
 
 <footer>
-  <span>데이터: 한국투자증권 Open API · 10분 단위 스냅샷</span>
+  <span>데이터: 한국투자증권 Open API · 5분 단위 스냅샷</span>
   <span>섹터 등락률 = 구성종목 등락률 단순평균</span>
   <span>주도주 = 해당 시점 섹터 내 등락률 1위</span>
   <span>종목 시세는 KRX+넥스트트레이드 통합(UN) · 매수금액 TOP30·코스피/코스닥 지수는 KRX 기준(API 제약)</span>
@@ -409,7 +414,7 @@ function renderLeaders(rows){
       <div class="sname">${r.sector}</div>
       <div class="schg ${cls(r.chg)}">${sign(r.chg)}<span style="font-size:15px">%</span></div>
       <div class="meta">상승 ${r.last.up} / 하락 ${r.last.down} · 총 ${r.last.n}종목</div>
-      <div class="meta">거래대금 ${amtText(r.last.amt)} · 최근 10분 ${sign(r.mom)}p</div>
+      <div class="meta">거래대금 ${amtText(r.last.amt)} · 최근 5분 ${sign(r.mom)}p</div>
       <div class="lead">
         <span class="tag">주도주</span>
         <span class="nm">${L.name}</span>
@@ -948,7 +953,7 @@ function renderRankDetail(rowsAll){
   else if (chartSeries.length >= 2) wireStockChart(chartSeries);
 }
 
-// 이 종목의 오늘 하루 가격 시계열 — 1차로 섹터 유니버스 스냅샷(항상 10분마다 다 있음)에서 찾고,
+// 이 종목의 오늘 하루 가격 시계열 — 1차로 섹터 유니버스 스냅샷(항상 5분마다 다 있음)에서 찾고,
 // 유니버스 밖 종목(TOP30에만 잠깐 나타난 경우)이면 그 시점의 순위표 기록에서 듬성듬성 모은다
 function stockSeries(code){
   let series = DATA.slots
@@ -1028,6 +1033,8 @@ function candleChartHTML(){
   return `
     <div class="candle-toolbar" id="candleToolbar">
       ${CANDLE_PERIODS.map(p => `<button data-period="${p.key}" aria-pressed="${p.key===candlePeriod}">${p.label}</button>`).join("")}
+      <button id="candleZoomReset" class="candle-zoomreset" title="전체 기간 보기">전체보기</button>
+      <span class="candle-hint">스크롤로 확대·축소 · 드래그로 좌우 이동</span>
     </div>
     <div class="candle-wrap" id="candleWrap">
       <svg class="candle-chart" id="candleSvg" viewBox="0 0 600 190" preserveAspectRatio="none"></svg>
@@ -1036,14 +1043,23 @@ function candleChartHTML(){
     </div>`;
 }
 
+// 확대·축소(보이는 캔들 개수)와 좌우 스크롤(시작 위치) 상태 — 기간을 바꾸면 초기화됨
+let candleZoom = null;
+let candleOffset = 0;
+
 function wireCandleChart(candleSet){
   const toolbar = $("#candleToolbar");
-  toolbar.querySelectorAll("button").forEach(b => {
+  toolbar.querySelectorAll("button[data-period]").forEach(b => {
     b.addEventListener("click", () => {
       candlePeriod = b.dataset.period;
-      toolbar.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x===b)));
+      candleZoom = null; candleOffset = 0;   // 기간이 바뀌면 줌/스크롤 리셋
+      toolbar.querySelectorAll("button[data-period]").forEach(x => x.setAttribute("aria-pressed", String(x===b)));
       drawCandles(candleSet);
     });
+  });
+  $("#candleZoomReset").addEventListener("click", () => {
+    candleZoom = null; candleOffset = 0;
+    drawCandles(candleSet);
   });
   drawCandles(candleSet);
 }
@@ -1051,9 +1067,9 @@ function wireCandleChart(candleSet){
 function drawCandles(candleSet){
   const svg = $("#candleSvg"), wrap = $("#candleWrap");
   const crosshair = $("#candleCross"), tip = $("#candleTip");
-  const bars = (candleSet[candlePeriod] || []).slice(-90);   // 화면 폭 대비 너무 촘촘해지지 않도록 최근 90개까지만
+  const allBars = candleSet[candlePeriod] || [];
 
-  if (bars.length < 2){
+  if (allBars.length < 2){
     svg.innerHTML = "";
     crosshair.style.opacity = "0"; tip.style.opacity = "0";
     svg.insertAdjacentHTML("afterend",
@@ -1062,9 +1078,15 @@ function drawCandles(candleSet){
   }
   document.getElementById("candleEmptyNote")?.remove();
 
+  // 줌 미설정 시 기본값(최근 90개, 그보다 적으면 전체) — 스크롤/드래그로 바뀐 값은 유지
+  if (candleZoom === null) candleZoom = Math.min(allBars.length, 90);
+  candleZoom = Math.max(10, Math.min(candleZoom, allBars.length));
+  candleOffset = Math.max(0, Math.min(candleOffset, allBars.length - candleZoom));
+  const bars = allBars.slice(candleOffset, candleOffset + candleZoom);
+
   const W = 600, H_C = 140, GAP = 4, H_V = 40, H = H_C + GAP + H_V;
   const n = bars.length;
-  const bw = Math.max(1.5, (W / n) * 0.62);
+  const bw = Math.max(1, (W / n) * 0.62);
 
   const highs = bars.map(b => b[2]), lows = bars.map(b => b[3]);
   const lo = Math.min(...lows), hi = Math.max(...highs);
@@ -1127,13 +1149,45 @@ function drawCandles(candleSet){
   }
   function hide(){ crosshair.style.opacity = "0"; tip.style.opacity = "0"; }
 
+  // ── 마우스 휠 = 확대/축소 (커서 위치를 중심으로, 다른 HTS 캔들차트와 같은 동작)
+  wrap.onwheel = e => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const relX = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const anchorBar = candleOffset + relX * candleZoom;   // 확대축소 기준점(캔들 인덱스)
+    const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;         // 아래로 굴리면 축소(더 넓게), 위로 굴리면 확대
+    const newZoom = Math.max(10, Math.min(Math.round(candleZoom * factor), allBars.length));
+    candleOffset = Math.round(anchorBar - relX * newZoom);
+    candleZoom = newZoom;
+    drawCandles(candleSet);
+  };
+
+  // ── 드래그 = 좌우로 과거/최신 이동
+  let dragging = false, dragStartX = 0, dragStartOffset = 0;
+  wrap.onpointerdown = e => {
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartOffset = candleOffset;
+    wrap.setPointerCapture(e.pointerId);
+    hide();
+  };
   wrap.onpointermove = e => {
+    if (dragging){
+      const rect = svg.getBoundingClientRect();
+      // 손(캔버스)을 잡고 끄는 방식(HTS 관례) — 왼쪽으로 끌면 캔버스가 왼쪽으로 밀려나면서
+      // 오른쪽(더 최근 구간)이 새로 드러남 = offset 증가
+      const deltaBars = Math.round(-(e.clientX - dragStartX) / rect.width * candleZoom);
+      const nextOffset = Math.max(0, Math.min(dragStartOffset + deltaBars, allBars.length - candleZoom));
+      if (nextOffset !== candleOffset){ candleOffset = nextOffset; drawCandles(candleSet); }
+      return;
+    }
     const rect = svg.getBoundingClientRect();
     const relX = (e.clientX - rect.left) / rect.width;
     const i = Math.min(n-1, Math.max(0, Math.floor(relX * n)));
     showAt(i);
   };
-  wrap.onpointerleave = hide;
+  wrap.onpointerup = () => { dragging = false; };
+  wrap.onpointerleave = () => { dragging = false; hide(); };
 }
 
 function setView(v){

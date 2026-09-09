@@ -1,15 +1,15 @@
 """
-주도섹터 / 주도주 10분 매트릭스 — 데이터 수집 + 페이지 생성
+주도섹터 / 주도주 5분 매트릭스 — 데이터 수집 + 페이지 생성
 
 동작 요약
   1) sector_universe.SECTORS 에 정의된 전 종목의 현재 시세를 KIS API로 한 번에 훑는다
-  2) 10분 단위 슬롯(0900, 0910, ... 1530)에 스냅샷으로 기록한다
+  2) 5분 단위 슬롯(0900, 0910, ... 1530)에 스냅샷으로 기록한다
   3) 하루치 스냅샷을 docs/data/YYYYMMDD.json 에 누적 저장한다
   4) 그 데이터를 그대로 박아넣은 정적 페이지 docs/index.html 을 다시 만든다
 
 실행 예
   python sector_matrix.py            # 한 번 수집하고 페이지 생성
-  python sector_matrix.py --loop     # 장중 10분마다 자동 반복
+  python sector_matrix.py --loop     # 장중 5분마다 자동 반복
   python sector_matrix.py --push     # 수집 후 깃허브에 자동 커밋/푸시
 """
 import argparse
@@ -76,11 +76,13 @@ OHLC_TR_ID = "FHKST03010100"
 MINUTE_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 MINUTE_TR_ID = "FHKST03010200"
 
-# 정규장 09:00 ~ 15:30 을 10분 단위로 자른 슬롯 라벨
+SLOT_MINUTES = 5   # 업데이트 주기(분) — 슬롯 라벨·수집 루프 대기 시간이 모두 이 값을 따름
+
+# 정규장 09:00 ~ 15:30 을 SLOT_MINUTES 단위로 자른 슬롯 라벨
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
     for h in range(9, 16)
-    for m in (0, 10, 20, 30, 40, 50)
+    for m in range(0, 60, SLOT_MINUTES)
     if (h, m) <= (15, 30)
 ]
 
@@ -429,11 +431,8 @@ def fetch_ohlc_history(code: str, period: str, retries: int = 2) -> list:
     return []
 
 
-def fetch_minute_bars(code: str, retries: int = 2) -> list:
-    """
-    최근 1분봉 ~30개를 조회 (당일 것만 제공되는 API). 5분봉으로 묶는 건 호출한 쪽에서 처리.
-    반환: [[HHMM, 시가, 고가, 저가, 종가, 체결량, 누적거래대금(억)], ...] 오래된 순.
-    """
+def _fetch_minute_page(code: str, hour: str, retries: int = 2) -> list:
+    """1분봉 API 한 페이지(hour 기준 최근 30개)를 조회."""
     headers = {
         "content-type": "application/json; charset=utf-8",
         "appkey": KIS_APP_KEY,
@@ -441,10 +440,9 @@ def fetch_minute_bars(code: str, retries: int = 2) -> list:
         "tr_id": MINUTE_TR_ID,
         "custtype": "P",
     }
-    now = datetime.now(KST)
     params = {
         "FID_ETC_CLS_CODE": "", "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
-        "FID_INPUT_HOUR_1": now.strftime("%H%M%S"),
+        "FID_INPUT_HOUR_1": hour,
         "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": "",
     }
     for attempt in range(retries):
@@ -457,25 +455,61 @@ def fetch_minute_bars(code: str, retries: int = 2) -> list:
             if data.get("rt_cd") != "0":
                 time.sleep(0.5 * (attempt + 1))
                 continue
-            rows = []
-            for o in data.get("output2", []):
-                hhmm = o.get("stck_cntg_hour", "")[:4]
-                if not hhmm:
-                    continue
-                rows.append([
-                    hhmm,
-                    int(_f(o.get("stck_oprc"))),
-                    int(_f(o.get("stck_hgpr"))),
-                    int(_f(o.get("stck_lwpr"))),
-                    int(_f(o.get("stck_prpr"))),
-                    int(_f(o.get("cntg_vol"))),
-                    round(_f(o.get("acml_tr_pbmn")) / 1e8, 1),
-                ])
-            rows.sort(key=lambda r: r[0])
-            return rows
+            return data.get("output2", [])
         except Exception:
             time.sleep(0.5 * (attempt + 1))
     return []
+
+
+def fetch_minute_bars(code: str, start_hour: str = "090000", have_until: str | None = None) -> list:
+    """
+    장 시작(기본 09:00)부터 지금까지 1분봉을 페이지네이션으로 모아 반환.
+    이 API는 "요청 시각 기준 최근 30개"만 주므로, 받은 페이지의 가장 이른 시각을
+    다음 요청의 기준으로 삼아 거꾸로(현재→09:00) 훑어 하루 전체를 채운다.
+
+    have_until(HHMM)을 주면 — 이미 그 시각까지는 저장돼 있다는 뜻이므로 —
+    거기 도달하는 순간 페이지네이션을 멈춘다. 처음 수집할 때는 None 이라 하루 전체(약 14회)를
+    받지만, 이후 사이클부터는 그새 지난 몇 분치(1~2회)만 받아오면 되니 훨씬 빠르다.
+    반환: [[HHMM, 시가, 고가, 저가, 종가, 체결량, 누적거래대금(억)], ...] 오래된 순.
+    """
+    now = datetime.now(KST)
+    hour = now.strftime("%H%M%S")
+    seen: set = set()
+    rows_by_time: dict = {}
+
+    for _ in range(20):   # 하루(09:00~15:30, 391분)면 14번이면 충분 — 여유 있게 20회 캡
+        page = _fetch_minute_page(code, hour)
+        if not page:
+            break
+        # 이 API는 "당일" 전용 — 장 시작 전(개장 전 새벽 등)에 호출하면 페이지네이션이 거슬러
+        # 올라갈수록 실제 데이터가 없어서 전날 종가를 그대로 채운 "거래량 0" 페이지를 준다.
+        # 그런 가짜 페이지가 나오면 더 이상 과거로 가지 않고 여기서 멈춘다.
+        if all(_f(o.get("cntg_vol")) == 0 for o in page):
+            break
+        for o in page:
+            full_hour = o.get("stck_cntg_hour", "")
+            hhmm = full_hour[:4]
+            if not hhmm:
+                continue
+            rows_by_time[hhmm] = [
+                hhmm,
+                int(_f(o.get("stck_oprc"))),
+                int(_f(o.get("stck_hgpr"))),
+                int(_f(o.get("stck_lwpr"))),
+                int(_f(o.get("stck_prpr"))),
+                int(_f(o.get("cntg_vol"))),
+                round(_f(o.get("acml_tr_pbmn")) / 1e8, 1),
+            ]
+        earliest = min(o.get("stck_cntg_hour", "999999") for o in page)
+        earliest_hhmm = earliest[:4]
+        if (earliest in seen or earliest <= start_hour
+                or (have_until and earliest_hhmm <= have_until)):
+            break
+        seen.add(earliest)
+        hour = earliest
+        time.sleep(REQ_INTERVAL)
+
+    return [rows_by_time[t] for t in sorted(rows_by_time)]
 
 
 def resample_minutes(bars_1m: list, n: int) -> list:
@@ -499,13 +533,16 @@ def resample_minutes(bars_1m: list, n: int) -> list:
 MINUTE_BUCKETS = (("m1", 1), ("m3", 3), ("m5", 5), ("m15", 15))
 
 
-def fetch_candles(code: str) -> dict:
-    """종목 하나의 일/주/월봉 + 당일 1/3/5/15분봉을 한 번에 모아 반환."""
+def fetch_candles(code: str, have_until: str | None = None) -> dict:
+    """
+    종목 하나의 일/주/월봉 + 당일 1/3/5/15분봉을 한 번에 모아 반환.
+    have_until: 이미 저장된 1분봉의 최신 시각(HHMM) — 있으면 그 이후분만 증분 조회.
+    """
     out = {}
     for period, key in (("D", "D"), ("W", "W"), ("M", "M")):
         out[key] = fetch_ohlc_history(code, period)
         time.sleep(REQ_INTERVAL)
-    bars_1m = fetch_minute_bars(code)
+    bars_1m = fetch_minute_bars(code, have_until=have_until)
     for key, n in MINUTE_BUCKETS:
         out[key] = resample_minutes(bars_1m, n)
     time.sleep(REQ_INTERVAL)
@@ -700,13 +737,13 @@ def collect_snapshot() -> dict:
 # ---------------------------------------------------------------- 슬롯/저장
 
 def current_slot(now: datetime) -> str:
-    """현재 시각이 속한 10분 슬롯 라벨. 장 시작 전이면 0900, 장 마감 후면 1530으로 묶는다."""
+    """현재 시각이 속한 슬롯 라벨(SLOT_MINUTES 단위). 장 시작 전이면 0900, 장 마감 후면 1530으로 묶는다."""
     hm = now.hour * 100 + now.minute
     if hm < 900:
         return "0900"
     if hm >= 1530:
         return "1530"
-    return f"{now.hour:02d}{(now.minute // 10) * 10:02d}"
+    return f"{now.hour:02d}{(now.minute // SLOT_MINUTES) * SLOT_MINUTES:02d}"
 
 
 def load_day(date_str: str) -> dict:
@@ -839,10 +876,13 @@ def run_once(push: bool = False) -> None:
 
     print(f"  캔들(1/3/5/15분·일·주·월봉) {len(ranks)}종목 수집 중…", flush=True)
     for r in ranks:
+        code = r[0]
+        have = day["candles"].get(code, {}).get("m1", [])
+        have_until = have[-1][0] if have else None   # 이미 이 시각까지 있으면 그 이후만 증분 조회
         try:
-            merge_candles(day, r[0], fetch_candles(r[0]))
+            merge_candles(day, code, fetch_candles(code, have_until=have_until))
         except Exception as e:
-            print(f"  ⚠ {r[1]}({r[0]}) 캔들 수집 실패: {e}")
+            print(f"  ⚠ {r[1]}({code}) 캔들 수집 실패: {e}")
 
     day["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
     save_day(day)
@@ -867,7 +907,7 @@ def run_daily(push: bool) -> None:
     """
     하루 한 번 실행되는 모드 (launchd 가 매일 오전 8시에 띄움).
       - 주말/공휴일이면 아무것도 하지 않고 즉시 종료
-      - 장 시작 전에는 대기, 09:00~15:30 은 10분마다 수집
+      - 장 시작 전에는 대기, 09:00~15:30 은 SLOT_MINUTES 간격으로 수집
       - 장 마감(15:35) 이 지나면 스스로 종료 -> 다음 날 아침에 새 프로세스로 다시 시작
     """
     now = datetime.now(KST)
@@ -878,7 +918,7 @@ def run_daily(push: bool) -> None:
         print(f"[{now:%m-%d %H:%M}] 이미 장 마감 이후 — 종료")
         return
 
-    print(f"[{now:%m-%d %H:%M}] 오늘 장 수집 시작 (마감까지 10분 간격)")
+    print(f"[{now:%m-%d %H:%M}] 오늘 장 수집 시작 (마감까지 {SLOT_MINUTES}분 간격)")
     while True:
         now = datetime.now(KST)
         hm = now.hour * 100 + now.minute
@@ -890,16 +930,16 @@ def run_daily(push: bool) -> None:
         else:
             print(f"[{now:%m-%d %H:%M}] 장 시작 전 — 대기", flush=True)
 
-        # 다음 10분 경계까지 대기 (수집에 걸린 시간만큼 자동으로 짧아짐)
+        # 다음 슬롯 경계까지 대기 (수집에 걸린 시간만큼 자동으로 짧아짐)
         now = datetime.now(KST)
-        nxt = (now + timedelta(minutes=10)).replace(second=5, microsecond=0)
-        nxt = nxt.replace(minute=(nxt.minute // 10) * 10)
-        time.sleep(max(20, (nxt - now).total_seconds()))
+        nxt = (now + timedelta(minutes=SLOT_MINUTES)).replace(second=5, microsecond=0)
+        nxt = nxt.replace(minute=(nxt.minute // SLOT_MINUTES) * SLOT_MINUTES)
+        time.sleep(max(15, (nxt - now).total_seconds()))
 
 
 def run_loop(push: bool) -> None:
-    """장중에는 10분 경계마다, 장외에는 대기하며 반복."""
-    print("장중 10분 단위 자동 수집 시작 (Ctrl+C 로 종료)")
+    """장중에는 SLOT_MINUTES 경계마다, 장외에는 대기하며 반복."""
+    print(f"장중 {SLOT_MINUTES}분 단위 자동 수집 시작 (Ctrl+C 로 종료)")
     while True:
         now = datetime.now(KST)
         if is_market_time(now):
@@ -907,17 +947,17 @@ def run_loop(push: bool) -> None:
         else:
             print(f"[{now:%m-%d %H:%M}] 장외 시간 — 대기")
 
-        # 다음 10분 경계까지 대기
+        # 다음 슬롯 경계까지 대기
         now = datetime.now(KST)
-        nxt = (now + timedelta(minutes=10)).replace(second=5, microsecond=0)
-        nxt = nxt.replace(minute=(nxt.minute // 10) * 10)
-        wait = max(30, (nxt - now).total_seconds())
+        nxt = (now + timedelta(minutes=SLOT_MINUTES)).replace(second=5, microsecond=0)
+        nxt = nxt.replace(minute=(nxt.minute // SLOT_MINUTES) * SLOT_MINUTES)
+        wait = max(20, (nxt - now).total_seconds())
         time.sleep(wait)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="주도섹터/주도주 10분 매트릭스")
-    parser.add_argument("--loop", action="store_true", help="장중 10분마다 자동 반복 (계속 상주)")
+    parser = argparse.ArgumentParser(description="주도섹터/주도주 5분 매트릭스")
+    parser.add_argument("--loop", action="store_true", help="장중 5분마다 자동 반복 (계속 상주)")
     parser.add_argument("--daily", action="store_true",
                         help="오늘 장만 수집하고 마감 후 종료 (launchd 자동실행용)")
     parser.add_argument("--push", action="store_true", help="수집 후 깃허브 커밋/푸시")
