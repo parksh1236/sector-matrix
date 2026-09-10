@@ -79,15 +79,24 @@ MINUTE_TR_ID = "FHKST03010200"
 # 아침 브리핑용 미국 지수/종목 (오전 6시 = 미국장 마감 직후)
 US_INDEX_ENDPOINT = "/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice"
 US_INDEX_TR_ID = "FHKST03030200"
+# inquire-time-indexchartprice 로 조회되는 지수 (다우는 이 API로 값이 0만 나와서 아래 ETF로 대체)
 US_INDICES = (("SPX", "S&P500"), ("COMP", "나스닥 종합"), ("NDX", "나스닥100"),
               ("SOX", "필라델피아 반도체"), ("VIX", "VIX (변동성지수)"))
 US_STOCK_ENDPOINT = "/uapi/overseas-price/v1/quotations/price"
 US_STOCK_TR_ID = "HHDFS00000300"
+# 다우 지수는 KIS API 미제공 → DIA(다우 추종 ETF, NYSE Arca=AMS)로 대체. 등락률은 지수와 거의 동일.
+US_DOW_ETF = ("AMS", "DIA")
 US_STOCKS = (
     ("NAS", "NVDA", "엔비디아"), ("NAS", "AAPL", "애플"), ("NAS", "MSFT", "마이크로소프트"),
     ("NAS", "GOOGL", "알파벳"), ("NAS", "AMZN", "아마존"), ("NAS", "META", "메타"),
     ("NAS", "TSLA", "테슬라"), ("NAS", "AVGO", "브로드컴"), ("NAS", "AMD", "AMD"),
     ("NAS", "NFLX", "넷플릭스"),
+)
+# 미국 11개 GICS 섹터 SPDR ETF (전부 NYSE Arca=AMS) — 이걸로 미국 주도섹터를 계산
+US_SECTOR_ETFS = (
+    ("XLK", "기술"), ("XLC", "커뮤니케이션"), ("XLY", "임의소비재"), ("XLP", "필수소비재"),
+    ("XLE", "에너지"), ("XLF", "금융"), ("XLV", "헬스케어"), ("XLI", "산업재"),
+    ("XLB", "소재"), ("XLU", "유틸리티"), ("XLRE", "부동산"),
 )
 
 SLOT_MINUTES = 5   # 업데이트 주기(분) — 슬롯 라벨·수집 루프 대기 시간이 모두 이 값을 따름
@@ -420,7 +429,7 @@ def fetch_us_index(iscd: str, retries: int = 2) -> list | None:
 
 
 def fetch_us_stock(excd: str, symb: str, retries: int = 2) -> list | None:
-    """미국 개별종목 현재가. 반환: [현재가, 등락률%, 거래량]"""
+    """미국 개별종목 현재가. 반환: [현재가, 등락률%, 거래량, 등락폭(부호포함)]"""
     headers = {
         "content-type": "application/json; charset=utf-8",
         "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
@@ -436,7 +445,9 @@ def fetch_us_stock(excd: str, symb: str, retries: int = 2) -> list | None:
             last = _f(o.get("last"))
             if last == 0:
                 return None
-            return [round(last, 2), round(_f(o.get("rate")), 2), int(_f(o.get("tvol")))]
+            rate = round(_f(o.get("rate")), 2)
+            diff = round(-abs(_f(o.get("diff"))) if rate < 0 else abs(_f(o.get("diff"))), 4)
+            return [round(last, 2), rate, int(_f(o.get("tvol"))), diff]
         except Exception:
             time.sleep(0.5 * (attempt + 1))
     return None
@@ -481,23 +492,34 @@ def generate_morning_brief(push: bool = False) -> Path:
     now = datetime.now(KST)
     print(f"[{now:%m-%d %H:%M}] 아침 브리핑 생성 시작")
 
-    # ── 미국 지수
+    # ── 미국 지수 (S&P500·나스닥·SOX·VIX + 다우는 DIA ETF 로)
     us_idx = []
     for iscd, name in US_INDICES:
         v = fetch_us_index(iscd)
         if v:
             us_idx.append((name, *v))
         time.sleep(REQ_INTERVAL)
-    fut = fetch_us_futures()
-    if fut.get("YM"):
-        us_idx.append(("다우 선물", fut["YM"][0], fut["YM"][1], fut["YM"][2]))
+    dia = fetch_us_stock(*US_DOW_ETF)
+    if dia:
+        # DIA 는 다우지수의 약 1/100 → ×100 해서 지수 레벨처럼 표시(등락률·등락폭 그대로가 정확)
+        us_idx.append(("다우존스 (DIA×100)", round(dia[0] * 100, 2),
+                       round(dia[3] * 100, 2), dia[1]))
+
+    # ── 미국 주도섹터 (11개 GICS 섹터 SPDR ETF, 등락률 내림차순)
+    us_sectors = []
+    for symb, name in US_SECTOR_ETFS:
+        v = fetch_us_stock("AMS", symb)
+        if v:
+            us_sectors.append((name, symb, v[1]))   # (섹터명, 티커, 등락률%)
+        time.sleep(REQ_INTERVAL)
+    us_sectors.sort(key=lambda r: -r[2])
 
     # ── 미국 주요 종목
     us_stk = []
     for excd, symb, name in US_STOCKS:
         v = fetch_us_stock(excd, symb)
         if v:
-            us_stk.append((name, symb, *v))
+            us_stk.append((name, symb, v[0], v[1], v[2]))   # 종목명, 티커, 현재가, 등락률, 거래량
         time.sleep(REQ_INTERVAL)
 
     # ── 전일 한국 주도섹터 (가장 최근 날짜 파일의 마지막 슬롯)
@@ -511,11 +533,12 @@ def generate_morning_brief(push: bool = False) -> Path:
             idx = day["slots"][-1].get("idx", {})
             kospi, kosdaq = idx.get("KOSPI"), idx.get("KOSDAQ")
 
-    html = _render_morning_html(now, us_idx, us_stk, kr_date, kr_sectors, kospi, kosdaq)
+    html = _render_morning_html(now, us_idx, us_sectors, us_stk, kr_date, kr_sectors, kospi, kosdaq)
     DOCS.mkdir(exist_ok=True)
     out = DOCS / "morning.html"
     out.write_text(html, encoding="utf-8")
-    print(f"  ✔ {out} 생성 (미국지수 {len(us_idx)} · 미국종목 {len(us_stk)} · 한국섹터 {len(kr_sectors)})")
+    print(f"  ✔ {out} 생성 (미국지수 {len(us_idx)} · 미국섹터 {len(us_sectors)} · "
+          f"미국종목 {len(us_stk)} · 한국섹터 {len(kr_sectors)})")
 
     if push:
         try:
@@ -532,7 +555,7 @@ def generate_morning_brief(push: bool = False) -> Path:
     return out
 
 
-def _render_morning_html(now, us_idx, us_stk, kr_date, kr_sectors, kospi, kosdaq) -> str:
+def _render_morning_html(now, us_idx, us_sectors, us_stk, kr_date, kr_sectors, kospi, kosdaq) -> str:
     def sign_cls(v):
         return "up" if v > 0 else "down" if v < 0 else "flat"
 
@@ -541,6 +564,11 @@ def _render_morning_html(now, us_idx, us_stk, kr_date, kr_sectors, kospi, kosdaq
         f'<td class="mono {sign_cls(pct)}">{diff:+,.2f}</td>'
         f'<td class="mono {sign_cls(pct)}">{_pct(pct)}</td></tr>'
         for name, val, diff, pct in us_idx
+    )
+    ussec_rows = "".join(
+        f'<tr><td class="rk">{i}</td><td class="nm">{sec} <span class="tk">{tk}</span></td>'
+        f'<td class="mono {sign_cls(pct)}">{_pct(pct)}</td></tr>'
+        for i, (sec, tk, pct) in enumerate(us_sectors, 1)
     )
     stk_rows = "".join(
         f'<tr><td class="nm">{name} <span class="tk">{symb}</span></td>'
@@ -600,6 +628,10 @@ footer{{margin-top:30px;color:var(--faint);font-family:var(--mono);font-size:11p
 <h2>미국장 마감</h2>
 <table><thead><tr><th class="l">지수</th><th>종가</th><th>등락</th><th>등락률</th></tr></thead>
 <tbody>{idx_rows or '<tr><td colspan="4" class="dim">조회 실패</td></tr>'}</tbody></table>
+
+<h2>미국 주도섹터 <span class="dim mono" style="font-size:12px">SPDR 11개 섹터 ETF 등락률</span></h2>
+<table><thead><tr><th class="l">#</th><th class="l">섹터</th><th>등락률</th></tr></thead>
+<tbody>{ussec_rows or '<tr><td colspan="3" class="dim">조회 실패</td></tr>'}</tbody></table>
 
 <h2>미국 주요 종목</h2>
 <table><thead><tr><th class="l">종목</th><th>종가($)</th><th>등락률</th><th>거래량</th></tr></thead>
