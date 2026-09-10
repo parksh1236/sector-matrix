@@ -537,12 +537,30 @@ def generate_morning_brief(push: bool = False) -> Path:
     DOCS.mkdir(exist_ok=True)
     out = DOCS / "morning.html"
     out.write_text(html, encoding="utf-8")
+
+    # 메인 대시보드의 "미국장 모닝브리핑" 탭이 읽을 구조화 데이터 (미국 부분만)
+    DATA.mkdir(parents=True, exist_ok=True)
+    (DATA / "morning.json").write_text(json.dumps({
+        "ts": now.strftime("%Y-%m-%d %H:%M"),
+        "idx": [[nm, val, diff, pct] for nm, val, diff, pct in us_idx],
+        "sectors": [[nm, tk, pct] for nm, tk, pct in us_sectors],
+        "stocks": [list(s) for s in us_stk],
+    }, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
     print(f"  ✔ {out} 생성 (미국지수 {len(us_idx)} · 미국섹터 {len(us_sectors)} · "
           f"미국종목 {len(us_stk)} · 한국섹터 {len(kr_sectors)})")
 
+    # 메인 대시보드도 다시 만들어 방금 갱신한 모닝브리핑 탭이 즉시 반영되게 한다.
+    # 아직 오늘 수집 전(06시)이므로 데이터가 있는 가장 최근 날짜로 빌드 — 09시부터는 run_once 가 오늘 것으로 덮음.
+    latest = day_files[-1] if day_files else None
+    if latest:
+        build_page(json.loads(latest.read_text(encoding="utf-8")))
+        print("  ✔ docs/index.html 재생성 (모닝브리핑 탭 반영)")
+
     if push:
         try:
-            subprocess.run(["git", "add", "docs/morning.html"], cwd=ROOT, check=True)
+            subprocess.run(["git", "add", "docs/morning.html", "docs/data/morning.json",
+                            "docs/index.html"], cwd=ROOT, check=True)
             if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=ROOT).returncode != 0:
                 subprocess.run(["git", "commit", "-m",
                                 f"Morning brief {now:%Y-%m-%d} 06:00 KST"], cwd=ROOT, check=True)
@@ -1066,6 +1084,13 @@ def upsert_slot(day: dict, slot: str, snapshot: dict, ranks: list | None = None,
 def build_page(day: dict) -> Path:
     """수집한 데이터를 그대로 박아 넣은 자립형(self-contained) HTML 을 생성."""
     universe = {sec: [[c, n] for c, n in members] for sec, members in SECTORS.items()}
+    morning = None
+    mj = DATA / "morning.json"
+    if mj.exists():
+        try:
+            morning = json.loads(mj.read_text(encoding="utf-8"))
+        except Exception:
+            morning = None
     payload = {
         "universe": universe,
         "date": day["date"],
@@ -1073,7 +1098,8 @@ def build_page(day: dict) -> Path:
         "slot_labels": SLOT_LABELS,
         "slots": day["slots"],
         "candles": day.get("candles", {}),
-        "available_dates": sorted(p.stem for p in DATA.glob("*.json")),
+        "morning": morning,
+        "available_dates": sorted(p.stem for p in DATA.glob("*.json") if p.stem != "morning"),
     }
     template = (ROOT / "sector_matrix_template.html").read_text(encoding="utf-8")
     html = template.replace(

@@ -215,6 +215,20 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
 .crow .pv{width:104px;flex:none;text-align:right;font-family:var(--mono);font-size:12.5px;color:var(--ink-dim)}
 
 .rank-shell{border:1px solid var(--line);border-radius:12px;overflow:auto;background:var(--panel)}
+
+/* ---------- 미국장 모닝브리핑 탭 ---------- */
+.mbrief{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.mbrief .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.mbrief h3{margin:0 0 10px;font-size:13px;font-weight:700;color:var(--ink-dim)}
+.mbrief h3 .sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);font-weight:400;margin-left:5px}
+.mbrief table{width:100%;border-collapse:collapse;font-size:12.5px}
+.mbrief th{text-align:right;color:var(--ink-faint);font-weight:500;font-size:10.5px;padding:5px 7px;border-bottom:1px solid var(--line)}
+.mbrief th.l{text-align:left}
+.mbrief td{padding:6px 7px;text-align:right;border-bottom:1px solid rgba(35,41,54,.5);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.mbrief td.nm{text-align:left;font-family:var(--sans);font-weight:600}
+.mbrief td.rk{text-align:left;color:var(--ink-faint);width:22px}
+.mbrief .tk{color:var(--ink-faint);font-family:var(--mono);font-size:9.5px}
+.mbrief .dim{color:var(--ink-faint)}
 .rtable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13.5px}
 .rtable thead th{position:sticky;top:0;background:var(--panel-2);color:var(--ink-faint);
   font-weight:500;font-size:12px;text-align:right;padding:10px 11px;
@@ -265,6 +279,7 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
   <div class="tabs" role="tablist">
     <button role="tab" data-view="matrix" aria-selected="true">섹터 매트릭스</button>
     <button role="tab" data-view="rank" aria-selected="false">매수금액 TOP 30</button>
+    <button role="tab" data-view="morning" aria-selected="false">미국장 모닝브리핑</button>
   </div>
   <div class="spacer"></div>
   <div class="hctl">
@@ -319,6 +334,14 @@ footer{margin-top:22px;color:var(--ink-faint);font-size:12.5px;font-family:var(-
     <table class="rtable" id="rankTable"><thead></thead><tbody></tbody></table>
   </div>
   <section class="detail" id="rankDetail"></section>
+</div>
+
+<div id="view-morning" hidden>
+  <div class="toolbar">
+    <span class="lbl" id="morningStamp">—</span>
+    <span class="lbl" style="margin-left:auto"><a href="./morning.html" style="color:var(--ink-dim)">전체 브리핑(전일 한국 주도섹터 포함) →</a></span>
+  </div>
+  <div class="mbrief" id="morningBody"></div>
 </div>
 
 <footer>
@@ -1261,9 +1284,56 @@ function setView(v){
   curView = v;
   document.querySelectorAll('[role="tab"]').forEach(b =>
     b.setAttribute("aria-selected", String(b.dataset.view === v)));
-  $("#view-matrix").hidden = v !== "matrix";
-  $("#view-rank").hidden   = v !== "rank";
+  $("#view-matrix").hidden  = v !== "matrix";
+  $("#view-rank").hidden    = v !== "rank";
+  $("#view-morning").hidden = v !== "morning";
   if (v === "rank") renderRank();
+  if (v === "morning") renderMorning();
+}
+
+/* ---------------- 미국장 모닝브리핑 ---------------- */
+function renderMorning(){
+  const m = PAYLOAD.morning;
+  const body = $("#morningBody"), stamp = $("#morningStamp");
+  if (!m){
+    stamp.textContent = "";
+    body.innerHTML = `<div class="empty-note">아직 모닝브리핑이 생성되지 않았습니다 (매일 06:00 KST 자동 갱신).</div>`;
+    return;
+  }
+  stamp.textContent = `${m.ts} KST 기준 · 미국장 마감 시세`;
+  const scl = v => v > 0 ? "up" : v < 0 ? "down" : "flat";
+  const pct = v => `${v>=0?"+":""}${v.toFixed(2)}%`;
+
+  const idxRows = (m.idx || []).map(([nm, val, diff, p]) =>
+    `<tr><td class="nm">${nm}</td><td>${val.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+     <td class="${scl(p)}">${diff>=0?"+":""}${diff.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+     <td class="${scl(p)}">${pct(p)}</td></tr>`).join("");
+
+  const secRows = (m.sectors || []).map(([nm, tk, p], i) =>
+    `<tr><td class="rk">${i+1}</td><td class="nm">${nm} <span class="tk">${tk}</span></td>
+     <td class="${scl(p)}">${pct(p)}</td></tr>`).join("");
+
+  const stkRows = (m.stocks || []).map(([nm, tk, last, rate, vol]) =>
+    `<tr><td class="nm">${nm} <span class="tk">${tk}</span></td>
+     <td>${last.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+     <td class="${scl(rate)}">${pct(rate)}</td><td class="dim">${vol.toLocaleString()}</td></tr>`).join("");
+
+  body.innerHTML = `
+    <div class="card">
+      <h3>미국 지수</h3>
+      <table><thead><tr><th class="l">지수</th><th>종가</th><th>등락</th><th>등락률</th></tr></thead>
+      <tbody>${idxRows || '<tr><td colspan="4" class="dim">조회 실패</td></tr>'}</tbody></table>
+    </div>
+    <div class="card">
+      <h3>미국 주도섹터 <span class="sub">SPDR 11개 섹터 ETF</span></h3>
+      <table><thead><tr><th class="l">#</th><th class="l">섹터</th><th>등락률</th></tr></thead>
+      <tbody>${secRows || '<tr><td colspan="3" class="dim">조회 실패</td></tr>'}</tbody></table>
+    </div>
+    <div class="card">
+      <h3>미국 주요 종목</h3>
+      <table><thead><tr><th class="l">종목</th><th>종가($)</th><th>등락률</th><th>거래량</th></tr></thead>
+      <tbody>${stkRows || '<tr><td colspan="4" class="dim">조회 실패</td></tr>'}</tbody></table>
+    </div>`;
 }
 
 document.querySelectorAll('[role="tab"]').forEach(b =>
