@@ -15,6 +15,16 @@
 | 코스피 / 코스닥 | 현재 지수·등락·등락률, 거래대금, 상승/보합/하락 종목 수, 하루치 5분 슬롯을 이은 라인차트(hover 시 크로스헤어+툴팁) |
 | 나스닥100 / S&P500 / 다우 선물 | 코스피 옆에 나란히 — CME 지수선물 현재가·등락률, 같은 방식의 라인차트. 분기월물(3/6/9/12월)이라 거래량이 더 많은 근월물을 자동으로 골라 씀(만기 롤오버 수동 관리 불필요) |
 
+### 아침 브리핑 (`morning.html`, 매일 06:00 KST 자동 갱신)
+
+미국장 마감 직후·한국장 개장(09시) 전에 보는 요약 페이지. 헤더의 "아침 브리핑" 링크로 이동.
+
+| 영역 | 내용 |
+|------|------|
+| 미국장 마감 | S&P500·나스닥종합·나스닥100·필라델피아 반도체(SOX)·VIX·다우 선물 종가·등락률 (다우 지수는 KIS API 미제공이라 선물로 대체) |
+| 미국 주요 종목 | 엔비디아·애플·MS·알파벳·아마존·메타·테슬라·브로드컴·AMD·넷플릭스 종가($)·등락률·거래량 |
+| 전일 한국 주도섹터 | 가장 최근 거래일 마지막 슬롯 기준 섹터 평균 등락률 상위 6개 + 각 섹터 주도주, 코스피/코스닥 종가 |
+
 ### ① 섹터 매트릭스 탭
 
 | 영역 | 내용 |
@@ -66,6 +76,7 @@ python sector_matrix.py --loop        # 장중 5분마다 자동 수집
 python sector_matrix.py --loop --push # 자동 수집 + 깃허브 자동 커밋/푸시
 python sector_matrix.py --daily --push # 오늘 장만 수집하고 마감 후 종료 (자동실행용)
 python sector_matrix.py --rebuild     # 수집 없이 저장된 데이터로 페이지만 재생성
+python sector_matrix.py --morning --push # 아침 브리핑(docs/morning.html) 생성·푸시
 ./run_sector_matrix.sh                # --loop --push 를 백그라운드로 실행
 ```
 
@@ -86,10 +97,18 @@ launchctl print gui/$(id -u)/com.parksh.sector-matrix | grep -E "state|last exit
 > 쓰기를 막아 **exit 78(EX_CONFIG)** 로 조용히 죽습니다. 로그는 반드시 `~/Library/Logs` 처럼
 > 보호되지 않는 경로에 두세요.
 
+아침 브리핑도 별도 작업으로 등록 (매일 06:00 KST):
+
+```bash
+cp launchd/com.parksh.sector-matrix-morning.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.parksh.sector-matrix-morning.plist
+```
+
 중지하려면:
 
 ```bash
 launchctl bootout gui/$(id -u)/com.parksh.sector-matrix
+launchctl bootout gui/$(id -u)/com.parksh.sector-matrix-morning
 ```
 
 ## 구조

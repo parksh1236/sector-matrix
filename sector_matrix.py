@@ -76,6 +76,20 @@ OHLC_TR_ID = "FHKST03010100"
 MINUTE_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 MINUTE_TR_ID = "FHKST03010200"
 
+# 아침 브리핑용 미국 지수/종목 (오전 6시 = 미국장 마감 직후)
+US_INDEX_ENDPOINT = "/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice"
+US_INDEX_TR_ID = "FHKST03030200"
+US_INDICES = (("SPX", "S&P500"), ("COMP", "나스닥 종합"), ("NDX", "나스닥100"),
+              ("SOX", "필라델피아 반도체"), ("VIX", "VIX (변동성지수)"))
+US_STOCK_ENDPOINT = "/uapi/overseas-price/v1/quotations/price"
+US_STOCK_TR_ID = "HHDFS00000300"
+US_STOCKS = (
+    ("NAS", "NVDA", "엔비디아"), ("NAS", "AAPL", "애플"), ("NAS", "MSFT", "마이크로소프트"),
+    ("NAS", "GOOGL", "알파벳"), ("NAS", "AMZN", "아마존"), ("NAS", "META", "메타"),
+    ("NAS", "TSLA", "테슬라"), ("NAS", "AVGO", "브로드컴"), ("NAS", "AMD", "AMD"),
+    ("NAS", "NFLX", "넷플릭스"),
+)
+
 SLOT_MINUTES = 5   # 업데이트 주기(분) — 슬롯 라벨·수집 루프 대기 시간이 모두 이 값을 따름
 
 # 정규장 09:00 ~ 15:30 을 SLOT_MINUTES 단위로 자른 슬롯 라벨
@@ -379,6 +393,225 @@ def fetch_us_futures() -> dict:
             best.get("exch_cd", ""),
         ]
     return result
+
+
+def fetch_us_index(iscd: str, retries: int = 2) -> list | None:
+    """미국 지수(SPX/COMP/NDX/SOX/VIX) 현재가. 반환: [현재가, 등락, 등락률%]"""
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
+        "tr_id": US_INDEX_TR_ID, "custtype": "P",
+    }
+    params = {"FID_COND_MRKT_DIV_CODE": "N", "FID_INPUT_ISCD": iscd,
+              "FID_HOUR_CLS_CODE": "0", "FID_PW_DATA_INCU_YN": "Y"}
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + US_INDEX_ENDPOINT, headers=headers, params=params, timeout=10)
+            resp.raise_for_status()
+            o = (resp.json().get("output1") or {})
+            prpr = _f(o.get("ovrs_nmix_prpr"))
+            if prpr == 0:
+                return None
+            return [round(prpr, 2), round(_f(o.get("ovrs_nmix_prdy_vrss")), 2), round(_f(o.get("prdy_ctrt")), 2)]
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def fetch_us_stock(excd: str, symb: str, retries: int = 2) -> list | None:
+    """미국 개별종목 현재가. 반환: [현재가, 등락률%, 거래량]"""
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET,
+        "tr_id": US_STOCK_TR_ID, "custtype": "P",
+    }
+    params = {"AUTH": "", "EXCD": excd, "SYMB": symb}
+    for attempt in range(retries):
+        try:
+            headers["authorization"] = f"Bearer {get_access_token()}"
+            resp = requests.get(BASE_URL + US_STOCK_ENDPOINT, headers=headers, params=params, timeout=10)
+            resp.raise_for_status()
+            o = (resp.json().get("output") or {})
+            last = _f(o.get("last"))
+            if last == 0:
+                return None
+            return [round(last, 2), round(_f(o.get("rate")), 2), int(_f(o.get("tvol")))]
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def leading_sectors(day: dict, top_n: int = 6) -> list:
+    """
+    저장된 하루 데이터의 마지막 슬롯에서 섹터별 평균 등락률과 주도주를 계산.
+    프론트엔드 agg() 로직과 동일 — 구성종목 등락률 단순평균, 등락률 1위가 주도주.
+    반환: [(섹터명, 평균등락률, 주도주명, 주도주등락률), ...] 등락률 내림차순
+    """
+    if not day.get("slots"):
+        return []
+    snap = day["slots"][-1]["d"]
+    rows = []
+    for sector, members in SECTORS.items():
+        chgs, best = [], None
+        for code, name in members:
+            v = snap.get(code)
+            if not v:
+                continue
+            chgs.append(v[0])
+            if best is None or v[0] > best[1]:
+                best = (name, v[0])
+        if not chgs:
+            continue
+        avg = sum(chgs) / len(chgs)
+        rows.append((sector, round(avg, 2), best[0], best[1]))
+    rows.sort(key=lambda r: -r[1])
+    return rows[:top_n]
+
+
+def _pct(v: float) -> str:
+    return f"{'+' if v >= 0 else ''}{v:.2f}%"
+
+
+def generate_morning_brief(push: bool = False) -> Path:
+    """
+    미국장 마감(현지 전일) + 전일 한국 주도섹터를 요약한 docs/morning.html 생성.
+    오전 6시(KST) launchd 로 실행 — 한국장 개장(09시) 전 참고용.
+    """
+    now = datetime.now(KST)
+    print(f"[{now:%m-%d %H:%M}] 아침 브리핑 생성 시작")
+
+    # ── 미국 지수
+    us_idx = []
+    for iscd, name in US_INDICES:
+        v = fetch_us_index(iscd)
+        if v:
+            us_idx.append((name, *v))
+        time.sleep(REQ_INTERVAL)
+    fut = fetch_us_futures()
+    if fut.get("YM"):
+        us_idx.append(("다우 선물", fut["YM"][0], fut["YM"][1], fut["YM"][2]))
+
+    # ── 미국 주요 종목
+    us_stk = []
+    for excd, symb, name in US_STOCKS:
+        v = fetch_us_stock(excd, symb)
+        if v:
+            us_stk.append((name, symb, *v))
+        time.sleep(REQ_INTERVAL)
+
+    # ── 전일 한국 주도섹터 (가장 최근 날짜 파일의 마지막 슬롯)
+    day_files = sorted(DATA.glob("[0-9]" * 8 + ".json"))
+    kr_date, kr_sectors, kospi, kosdaq = "", [], None, None
+    if day_files:
+        day = json.loads(day_files[-1].read_text(encoding="utf-8"))
+        kr_date = day.get("date", "")
+        kr_sectors = leading_sectors(day)
+        if day.get("slots"):
+            idx = day["slots"][-1].get("idx", {})
+            kospi, kosdaq = idx.get("KOSPI"), idx.get("KOSDAQ")
+
+    html = _render_morning_html(now, us_idx, us_stk, kr_date, kr_sectors, kospi, kosdaq)
+    DOCS.mkdir(exist_ok=True)
+    out = DOCS / "morning.html"
+    out.write_text(html, encoding="utf-8")
+    print(f"  ✔ {out} 생성 (미국지수 {len(us_idx)} · 미국종목 {len(us_stk)} · 한국섹터 {len(kr_sectors)})")
+
+    if push:
+        try:
+            subprocess.run(["git", "add", "docs/morning.html"], cwd=ROOT, check=True)
+            if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=ROOT).returncode != 0:
+                subprocess.run(["git", "commit", "-m",
+                                f"Morning brief {now:%Y-%m-%d} 06:00 KST"], cwd=ROOT, check=True)
+                subprocess.run(["git", "push"], cwd=ROOT, check=True)
+                print("  ✔ 깃허브 푸시 완료")
+            else:
+                print("  변경 없음 — 푸시 생략")
+        except subprocess.CalledProcessError as e:
+            print(f"  ⚠ 깃 작업 실패: {e}")
+    return out
+
+
+def _render_morning_html(now, us_idx, us_stk, kr_date, kr_sectors, kospi, kosdaq) -> str:
+    def sign_cls(v):
+        return "up" if v > 0 else "down" if v < 0 else "flat"
+
+    idx_rows = "".join(
+        f'<tr><td class="nm">{name}</td><td class="mono">{val:,.2f}</td>'
+        f'<td class="mono {sign_cls(pct)}">{diff:+,.2f}</td>'
+        f'<td class="mono {sign_cls(pct)}">{_pct(pct)}</td></tr>'
+        for name, val, diff, pct in us_idx
+    )
+    stk_rows = "".join(
+        f'<tr><td class="nm">{name} <span class="tk">{symb}</span></td>'
+        f'<td class="mono">{last:,.2f}</td>'
+        f'<td class="mono {sign_cls(rate)}">{_pct(rate)}</td>'
+        f'<td class="mono dim">{vol:,}</td></tr>'
+        for name, symb, last, rate, vol in us_stk
+    )
+    kd = f"{kr_date[4:6]}/{kr_date[6:]}" if len(kr_date) == 8 else kr_date
+    sec_rows = "".join(
+        f'<tr><td class="rk">{i}</td><td class="nm">{sec}</td>'
+        f'<td class="mono {sign_cls(avg)}">{_pct(avg)}</td>'
+        f'<td class="lead">{lead} <span class="mono {sign_cls(lc)}">{_pct(lc)}</span></td></tr>'
+        for i, (sec, avg, lead, lc) in enumerate(kr_sectors, 1)
+    )
+    kospi_line = ""
+    if kospi:
+        kospi_line = (
+            f'<p class="ki">코스피 <b class="mono">{kospi[0]:,.2f}</b> '
+            f'<span class="mono {sign_cls(kospi[2])}">{_pct(kospi[2])}</span> · '
+            f'코스닥 <b class="mono">{kosdaq[0]:,.2f}</b> '
+            f'<span class="mono {sign_cls(kosdaq[2])}">{_pct(kosdaq[2])}</span></p>'
+        )
+
+    return f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>아침 브리핑 · 주도섹터 매트릭스</title>
+<style>
+:root{{--bg:#0a0c10;--panel:#11141b;--line:#232936;--ink:#e6e9ef;--dim:#9aa3b2;--faint:#616b7d;
+--up:#ff4d5e;--down:#4d8dff;--flat:#6d7688;--mono:"SF Mono",ui-monospace,Menlo,monospace;
+--sans:"Pretendard","Apple SD Gothic Neo",system-ui,sans-serif;}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+font-size:14px;line-height:1.5;background-image:radial-gradient(ellipse 120% 60% at 50% -10%,#18202e 0,transparent 70%);
+background-repeat:no-repeat}}
+.wrap{{max-width:760px;margin:0 auto;padding:24px 18px 60px}}
+h1{{font-size:20px;font-weight:750;margin:0 0 2px;letter-spacing:-.02em}}
+.stamp{{color:var(--faint);font-family:var(--mono);font-size:12px;margin-bottom:22px}}
+h2{{font-size:15px;font-weight:700;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}}
+.ki{{color:var(--dim);font-size:13px;margin:0 0 12px}}
+table{{width:100%;border-collapse:collapse;font-size:13px}}
+th{{text-align:right;color:var(--faint);font-weight:500;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--line)}}
+th.l{{text-align:left}}
+td{{padding:7px 8px;text-align:right;border-bottom:1px solid rgba(35,41,54,.5)}}
+td.nm{{text-align:left;font-weight:600}}td.rk{{text-align:left;color:var(--faint);width:26px}}
+td.lead{{text-align:left}}
+.mono{{font-family:var(--mono);font-variant-numeric:tabular-nums}}
+.tk{{color:var(--faint);font-family:var(--mono);font-size:10px}}
+.dim{{color:var(--faint)}}
+.up{{color:var(--up)}}.down{{color:var(--down)}}.flat{{color:var(--flat)}}
+a{{color:var(--dim)}}
+footer{{margin-top:30px;color:var(--faint);font-family:var(--mono);font-size:11px}}
+</style></head><body><div class="wrap">
+<h1>아침 브리핑</h1>
+<div class="stamp">{now:%Y-%m-%d %H:%M} KST · 한국장 개장(09:00) 전 참고용</div>
+
+<h2>미국장 마감</h2>
+<table><thead><tr><th class="l">지수</th><th>종가</th><th>등락</th><th>등락률</th></tr></thead>
+<tbody>{idx_rows or '<tr><td colspan="4" class="dim">조회 실패</td></tr>'}</tbody></table>
+
+<h2>미국 주요 종목</h2>
+<table><thead><tr><th class="l">종목</th><th>종가($)</th><th>등락률</th><th>거래량</th></tr></thead>
+<tbody>{stk_rows or '<tr><td colspan="4" class="dim">조회 실패</td></tr>'}</tbody></table>
+
+<h2>전일 한국 주도섹터 <span class="dim mono" style="font-size:12px">{kd} 종가</span></h2>
+{kospi_line}
+<table><thead><tr><th class="l">#</th><th class="l">섹터</th><th>평균 등락률</th><th class="l">주도주</th></tr></thead>
+<tbody>{sec_rows or '<tr><td colspan="4" class="dim">데이터 없음</td></tr>'}</tbody></table>
+
+<footer>데이터: 한국투자증권 Open API · <a href="./index.html">주도섹터 5분 매트릭스</a></footer>
+</div></body></html>"""
 
 
 def fetch_ohlc_history(code: str, period: str, retries: int = 2) -> list:
@@ -964,12 +1197,18 @@ if __name__ == "__main__":
     parser.add_argument("--rebuild", action="store_true",
                         help="시세 수집 없이 저장된 데이터로 페이지만 다시 생성")
     parser.add_argument("--date", default=None, help="rebuild 대상 날짜 YYYYMMDD")
+    parser.add_argument("--morning", action="store_true",
+                        help="아침 브리핑(미국장 마감 + 전일 한국 주도섹터) docs/morning.html 생성")
     args = parser.parse_args()
 
     if args.rebuild:
         date_str = args.date or datetime.now(KST).strftime("%Y%m%d")
         day = load_day(date_str)
         print(f"✔ {build_page(day)} 재생성 (슬롯 {len(day['slots'])}개)")
+        sys.exit(0)
+
+    if args.morning:
+        generate_morning_brief(push=args.push)
         sys.exit(0)
 
     if args.daily:

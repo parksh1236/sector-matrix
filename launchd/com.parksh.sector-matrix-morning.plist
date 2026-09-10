@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.parksh.sector-matrix-morning</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/psh/Documents/code/sector-matrix/.venv/bin/python</string>
+    <string>/Users/psh/Documents/code/sector-matrix/sector_matrix.py</string>
+    <string>--morning</string>
+    <string>--push</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/psh/Documents/code/sector-matrix</string>
+
+  <!-- 매일 오전 6시 정각(KST). 미국장 마감 직후 — 한국장 개장(09시) 전 아침 브리핑 생성. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>6</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <!-- 한 번 실행하고 끝나는 작업이라 KeepAlive 불필요 -->
+  <key>ThrottleInterval</key>
+  <integer>300</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>ko_KR.UTF-8</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/psh/Library/Logs/sector-matrix-morning.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/psh/Library/Logs/sector-matrix-morning.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
