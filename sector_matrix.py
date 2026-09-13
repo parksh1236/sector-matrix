@@ -3,7 +3,8 @@
 
 동작 요약
   1) sector_universe.SECTORS 에 정의된 전 종목의 현재 시세를 KIS API로 한 번에 훑는다
-  2) 5분 단위 슬롯(0900, 0910, ... 1530)에 스냅샷으로 기록한다
+  2) 5분 단위 슬롯(0900, 0905, ... 1530, 1600, ... 2000)에 스냅샷으로 기록한다
+     — 09:00~15:30 오전장, 15:30~16:00 휴장, 16:00~20:00 오후장 (2026-09-14 부터 연장장)
   3) 하루치 스냅샷을 docs/data/YYYYMMDD.json 에 누적 저장한다
   4) 그 데이터를 그대로 박아넣은 정적 페이지 docs/index.html 을 다시 만든다
 
@@ -101,12 +102,17 @@ US_SECTOR_ETFS = (
 
 SLOT_MINUTES = 5   # 업데이트 주기(분) — 슬롯 라벨·수집 루프 대기 시간이 모두 이 값을 따름
 
-# 정규장 09:00 ~ 15:30 을 SLOT_MINUTES 단위로 자른 슬롯 라벨
+# 2026-09-14 부터 정규장 연장: 09:00~15:30 오전장 -> 15:30~16:00 휴장 -> 16:00~20:00 오후장.
+# (오전/오후 두 세션의 시작·끝 시각을 여기 한 곳만 고치면 전체 스케줄이 따라감)
+MARKET_SESSIONS = [(900, 1530), (1600, 2000)]
+
+# 두 세션을 SLOT_MINUTES 단위로 자른 슬롯 라벨 (휴장 시간대는 자동으로 빠짐)
 SLOT_LABELS = [
     f"{h:02d}{m:02d}"
-    for h in range(9, 16)
+    for start, end in MARKET_SESSIONS
+    for h in range(start // 100, end // 100 + 1)
     for m in range(0, 60, SLOT_MINUTES)
-    if (h, m) <= (15, 30)
+    if start <= h * 100 + m <= end
 ]
 
 REQ_INTERVAL = 0.12  # 초당 약 8건 — KIS 실전 유량제한(초당 20건) 안쪽으로 여유 있게
@@ -760,7 +766,7 @@ def fetch_minute_bars(code: str, start_hour: str = "090000", have_until: str | N
     seen: set = set()
     rows_by_time: dict = {}
 
-    for _ in range(20):   # 하루(09:00~15:30, 391분)면 14번이면 충분 — 여유 있게 20회 캡
+    for _ in range(30):   # 연장장 하루(09:00~15:30 + 16:00~20:00, 약 630분)면 22번이면 충분 — 여유 있게 30회 캡
         page = _fetch_minute_page(code, hour)
         if not page:
             break
@@ -1020,13 +1026,24 @@ def collect_snapshot() -> dict:
 # ---------------------------------------------------------------- 슬롯/저장
 
 def current_slot(now: datetime) -> str:
-    """현재 시각이 속한 슬롯 라벨(SLOT_MINUTES 단위). 장 시작 전이면 0900, 장 마감 후면 1530으로 묶는다."""
+    """
+    현재 시각이 속한 슬롯 라벨(SLOT_MINUTES 단위).
+    장 시작 전이면 첫 세션 시작 슬롯, 장 마감 후면 마지막 세션 종료 슬롯으로 묶는다.
+    두 세션 사이 휴장 시간대(15:30~16:00)에는 직전 세션의 마지막 슬롯을 그대로 유지한다.
+    """
     hm = now.hour * 100 + now.minute
-    if hm < 900:
-        return "0900"
-    if hm >= 1530:
-        return "1530"
-    return f"{now.hour:02d}{(now.minute // SLOT_MINUTES) * SLOT_MINUTES:02d}"
+    first_start, _ = MARKET_SESSIONS[0]
+    _, last_end = MARKET_SESSIONS[-1]
+    if hm < first_start:
+        return f"{first_start // 100:02d}{first_start % 100:02d}"
+    if hm >= last_end:
+        return f"{last_end // 100:02d}{last_end % 100:02d}"
+    for start, end in MARKET_SESSIONS:
+        if start <= hm <= end:
+            return f"{now.hour:02d}{(now.minute // SLOT_MINUTES) * SLOT_MINUTES:02d}"
+    # 세션 사이 휴장 시간 — 그 직전에 끝난 세션의 마지막 슬롯을 유지
+    prev_end = max(end for _, end in MARKET_SESSIONS if end <= hm)
+    return f"{prev_end // 100:02d}{prev_end % 100:02d}"
 
 
 def load_day(date_str: str) -> dict:
@@ -1187,39 +1204,48 @@ def run_once(push: bool = False) -> None:
 
 
 def is_market_time(now: datetime) -> bool:
-    """평일 09:00~15:35 사이인지 (주말/야간에는 수집하지 않음)."""
+    """평일이고 정규장(오전 09:00~15:30 또는 오후 16:00~20:00) 안인지 — 휴장 시간대는 제외."""
     if now.weekday() >= 5:
         return False
     hm = now.hour * 100 + now.minute
-    return 900 <= hm <= 1535
+    return any(start <= hm <= end + 5 for start, end in MARKET_SESSIONS)
 
 
 def run_daily(push: bool) -> None:
     """
     하루 한 번 실행되는 모드 (launchd 가 매일 오전 8시에 띄움).
       - 주말/공휴일이면 아무것도 하지 않고 즉시 종료
-      - 장 시작 전에는 대기, 09:00~15:30 은 SLOT_MINUTES 간격으로 수집
-      - 장 마감(15:35) 이 지나면 스스로 종료 -> 다음 날 아침에 새 프로세스로 다시 시작
+      - 첫 세션 시작 전에는 대기, 세션 안에서는 SLOT_MINUTES 간격으로 수집
+      - 세션 사이 휴장 시간대(15:30~16:00)에는 수집을 건너뛰고 대기만 함
+      - 마지막 세션 마감 후 5분이 지나면 스스로 종료 -> 다음 날 아침에 새 프로세스로 다시 시작
     """
+    first_start, _ = MARKET_SESSIONS[0]
+    _, last_end = MARKET_SESSIONS[-1]
+    close_hm = last_end + 5   # 마감 후 5분까지는 마지막 슬롯 수집 여유를 둠
+
     now = datetime.now(KST)
     if now.weekday() >= 5:
         print(f"[{now:%m-%d %H:%M}] 주말 — 오늘은 수집하지 않고 종료")
         return
-    if now.hour * 100 + now.minute > 1535:
+    if now.hour * 100 + now.minute > close_hm:
         print(f"[{now:%m-%d %H:%M}] 이미 장 마감 이후 — 종료")
         return
 
-    print(f"[{now:%m-%d %H:%M}] 오늘 장 수집 시작 (마감까지 {SLOT_MINUTES}분 간격)")
+    print(f"[{now:%m-%d %H:%M}] 오늘 장 수집 시작 "
+          f"({first_start//100:02d}:{first_start%100:02d}~{last_end//100:02d}:{last_end%100:02d}, "
+          f"{SLOT_MINUTES}분 간격)")
     while True:
         now = datetime.now(KST)
         hm = now.hour * 100 + now.minute
-        if hm > 1535:
+        if hm > close_hm:
             print(f"[{now:%m-%d %H:%M}] 장 마감 — 오늘 수집 종료")
             return
-        if hm >= 900:
+        if is_market_time(now):
             run_once(push=push)
-        else:
+        elif hm < first_start:
             print(f"[{now:%m-%d %H:%M}] 장 시작 전 — 대기", flush=True)
+        else:
+            print(f"[{now:%m-%d %H:%M}] 휴장 시간대(세션 사이) — 대기", flush=True)
 
         # 다음 슬롯 경계까지 대기 (수집에 걸린 시간만큼 자동으로 짧아짐)
         now = datetime.now(KST)
